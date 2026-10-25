@@ -24,6 +24,7 @@ public:
   bool setRole(const std::string& role, std::string& err); // "server", "client" or "" to choose again
   bool setClientKey(const std::string& key, std::string& err);
   void regenerateServerKey();
+  bool setCongestionControl(const std::string& cc, std::string& err); // "bbr" or "cubic"
   bool setAutostart(bool on);
   bool autostart();
   std::shared_ptr<Client> client();
@@ -47,7 +48,7 @@ private:
   json updateState();
 
   std::mutex mu_;
-  std::string role_, serverKey_, clientKey_, subToken_, roleError_;
+  std::string role_, serverKey_, clientKey_, subToken_, roleError_, cc_ = "bbr";
   std::shared_ptr<Server> server_;
   std::shared_ptr<Client> client_;
 

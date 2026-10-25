@@ -7,6 +7,7 @@
 #include <optional>
 #include <thread>
 
+#include "linkmeter.h"
 #include "signal.h"
 #include "socks.h"
 #include "tunnel.h"
@@ -19,7 +20,9 @@ namespace p2px {
 class Client : public std::enable_shared_from_this<Client> {
 public:
   ~Client();
-  bool start(const std::string& key, uint16_t socksPort, std::string& err);
+  bool start(const std::string& key, uint16_t socksPort, Cc cc, std::string& err);
+  // Switches congestion control (both directions) by reconnecting.
+  void setCc(Cc cc);
   void stop();
   json state();
   std::shared_ptr<Stream> open(uint8_t kind, const std::string& target, int waitMs, std::string& err);
@@ -37,6 +40,7 @@ private:
   void maintain();
   std::shared_ptr<Connection> connectOnce(std::string& err);
   void fetchNodeInfo();
+  void statsLoop();
   void onSignal(const json& m);
   void wakeUp();
   void runSpeedTest();
@@ -48,6 +52,9 @@ private:
   SocksServer socks_;
   std::thread maint_;
   std::atomic<bool> stopping_{false};
+  std::atomic<Cc> cc_{Cc::Bbr};
+  LinkMeter meter_;                 // loss of what we send, and probe round trips
+  std::atomic<double> peerLoss_{-1}; // loss of what the exit node sends us, as it reports
 
   std::mutex mu_;
   std::condition_variable cv_;

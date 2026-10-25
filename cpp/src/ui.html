@@ -112,8 +112,9 @@ pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace,
     </div>
     <div class="card">
       <h2>已连接的客户端</h2>
-      <table><thead><tr><th>名称</th><th>地址</th><th>已连接</th><th>延迟</th><th>流量（发 / 收）</th></tr></thead>
-        <tbody id="sClients"><tr><td colspan="5" class="muted">还没有客户端连接</td></tr></tbody></table>
+      <table><thead><tr><th>名称</th><th>地址</th><th>已连接</th><th>延迟 · 抖动</th><th>丢包 本机→它 / 它→本机</th><th>算法</th><th>流量（发 / 收）</th></tr></thead>
+        <tbody id="sClients"><tr><td colspan="7" class="muted">还没有客户端连接</td></tr></tbody></table>
+      <div class="muted" style="margin-top:8px">丢包和抖动按最近 30 秒统计。"它→本机"和抖动由客户端上报，旧版客户端（v2.1.0 及更早）显示"—"。拥塞算法由各客户端在自己的设置里选择。</div>
     </div>
   </section>
 
@@ -133,10 +134,14 @@ pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace,
         <div class="state"><span class="dot" id="cDot"></span><span id="cState">…</span></div>
         <div class="facts">
           <div><span>服务端地址</span><b id="cRemote">—</b></div>
-          <div><span>延迟</span><b id="cRtt">—</b></div>
+          <div><span>延迟 · 抖动</span><b id="cRtt">—</b></div>
           <div><span>已连接</span><b id="cUp">—</b></div>
           <div><span>流量（发 / 收）</span><b id="cTraffic">—</b></div>
+          <div><span>丢包 · 下行（服务端→本机）</span><b id="cLossDown">—</b></div>
+          <div><span>丢包 · 上行（本机→服务端）</span><b id="cLossUp">—</b></div>
+          <div><span>拥塞算法</span><b id="cCc">—</b></div>
         </div>
+        <div class="muted" style="margin-top:10px">丢包和抖动按最近 30 秒统计；流量很少时无法估算丢包。</div>
         <div class="err" id="cErr" hidden></div>
       </div>
       <div class="card">
@@ -182,6 +187,13 @@ pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace,
         <button class="secondary" id="changeKey" hidden>更换密钥</button>
         <button class="secondary" id="switchRole">切换角色</button>
       </div>
+      <div class="row" id="ccRow" style="margin-top:14px" hidden>
+        <span class="grow">拥塞算法（两个方向都用它）
+          <span class="muted" style="display:block">BBR：长距离、高带宽线路上更能跑满速度，丢包时不主动降速。CUBIC：遇到丢包会降速，在丢包多或被限速的线路上通常更稳。切换后会重连一次。</span></span>
+        <select id="ccSel" style="font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--tile);color:var(--text)">
+          <option value="bbr">BBR（默认）</option><option value="cubic">CUBIC</option>
+        </select>
+      </div>
       <p class="muted" style="margin:10px 0 0">关闭窗口不会停止 p2proxy，它会留在任务栏右下角的托盘里；要完全退出，请右键托盘图标。</p>
     </div>
     <div class="card">
@@ -212,6 +224,17 @@ function since(t) {
   return Math.floor(s / 86400) + " 天 " + Math.floor(s % 86400 / 3600) + " 小时";
 }
 const mbps = v => v >= 100 ? v.toFixed(0) : v.toFixed(1);
+const ccLabel = c => c === "cubic" ? "CUBIC" : "BBR";
+// Loss as colored text; null means too little traffic to tell.
+function lossHtml(v) {
+  if (v === null || v === undefined) return '<span class="muted">流量太少</span>';
+  const color = v > 2 ? "var(--bad)" : v > 0.5 ? "var(--warn)" : "inherit";
+  return `<span style="color:${color}">${v.toFixed(2)}%</span>`;
+}
+function rttJitter(rtt, jitter) {
+  return (rtt !== undefined && rtt !== null ? rtt.toFixed(0) + " ms" : "—") +
+    (jitter !== undefined && jitter !== null ? " · ±" + jitter.toFixed(0) + " ms" : "");
+}
 function show(id, on) { $(id).hidden = !on; }
 async function copy(text, btn) {
   try { await navigator.clipboard.writeText(text); }
@@ -235,6 +258,8 @@ function render() {
   $("roleBadge").textContent = s.role === "server" ? "服务端" : "客户端";
   $("autostart").checked = !!s.autostart;
   show("changeKey", s.role === "client" && s.client_key_set && !keyOpen);
+  show("ccRow", s.role === "client");
+  if (document.activeElement !== $("ccSel")) $("ccSel").value = s.cc || "bbr";
   const logs = (s.logs || []).join("\n");
   if ($("logs").textContent !== logs) $("logs").textContent = logs;
   if (s.role === "server") renderServer(s);
@@ -297,12 +322,18 @@ function renderServer(s) {
   $("sCount").textContent = cs.length;
   show("sNat", !!v.symmetric_nat);
   if ($("sKey").value !== (s.server_key || "")) $("sKey").value = s.server_key || "";
-  $("sClients").innerHTML = cs.length ? "" : '<tr><td colspan="5" class="muted">还没有客户端连接</td></tr>';
+  $("sClients").innerHTML = cs.length ? "" : '<tr><td colspan="7" class="muted">还没有客户端连接</td></tr>';
   for (const c of cs) {
     const tr = document.createElement("tr");
-    for (const t of [c.name, c.addr, since(c.since), c.rtt_ms.toFixed(0) + " ms", bytes(c.sent) + " / " + bytes(c.received)]) {
-      const td = document.createElement("td"); td.textContent = t; tr.append(td);
-    }
+    const cells = [c.name, c.addr, since(c.since), rttJitter(c.rtt_ms, c.jitter_ms), null, ccLabel(c.cc),
+      bytes(c.sent) + " / " + bytes(c.received)];
+    cells.forEach((t, i) => {
+      const td = document.createElement("td");
+      if (i === 4) td.innerHTML = lossHtml(c.loss_to_client_pct) + " / " +
+        (c.loss_from_client_pct === null ? '<span class="muted">—</span>' : lossHtml(c.loss_from_client_pct));
+      else td.textContent = t;
+      tr.append(td);
+    });
     $("sClients").append(tr);
   }
 }
@@ -317,7 +348,11 @@ function renderClient(s) {
   $("cDot").className = "dot " + (c.connected ? "ok" : s.role_error ? "bad" : "wait");
   $("cState").textContent = s.role_error ? "客户端无法启动" : c.connected ? "已连接，正在通过服务端上网" : "正在连接服务端…（此时无法上网，不会直连）";
   $("cRemote").textContent = c.remote || "—";
-  $("cRtt").textContent = c.connected ? c.rtt_ms.toFixed(0) + " ms" : "—";
+  $("cRtt").textContent = c.connected ? rttJitter(c.rtt_ms, c.jitter_ms) : "—";
+  $("cLossDown").innerHTML = c.connected ? (c.loss_down_pct === null || c.loss_down_pct === undefined
+    ? '<span class="muted">流量太少或服务端较旧</span>' : lossHtml(c.loss_down_pct)) : "—";
+  $("cLossUp").innerHTML = c.connected ? lossHtml(c.loss_up_pct) : "—";
+  $("cCc").textContent = ccLabel(c.cc);
   $("cUp").textContent = c.connected ? since(c.since) : "—";
   $("cTraffic").textContent = c.connected ? bytes(c.sent) + " / " + bytes(c.received) : "—";
   const err = s.role_error || (!c.connected && c.error ? "上次错误：" + c.error : "");
@@ -368,6 +403,11 @@ $("cSave").onclick = async () => {
 $("cKey").addEventListener("keydown", e => { if (e.key === "Enter") $("cSave").click(); });
 $("changeKey").onclick = () => { keyOpen = true; render(); $("cKey").focus(); };
 $("cCopySub").onclick = () => copy($("cSub").value, $("cCopySub"));
+$("ccSel").onchange = async e => {
+  await api("/api/cc", "POST", { cc: e.target.value });
+  e.target.blur();
+  refresh();
+};
 $("autostart").onchange = async e => { await api("/api/autostart", "POST", { enabled: e.target.checked }); refresh(); };
 $("switchRole").onclick = async () => {
   const next = st.role === "server" ? "客户端" : "服务端";

@@ -9,7 +9,7 @@ namespace p2px {
 
 const QUIC_API_TABLE* MsQuic = nullptr;
 HQUIC Quic::reg = nullptr;
-HQUIC Quic::clientCfg = nullptr;
+HQUIC Quic::clientCfg[2] = {nullptr, nullptr};
 
 namespace {
 
@@ -19,7 +19,7 @@ constexpr size_t kRxHigh = 8 << 20, kRxLow = 2 << 20; // receive buffer high/low
 constexpr size_t kTxLimit = 4 << 20;                  // unacknowledged sends per stream
 constexpr size_t kSendChunk = 256 << 10;
 
-QUIC_SETTINGS baseSettings() {
+QUIC_SETTINGS baseSettings(Cc cc) {
   QUIC_SETTINGS s{};
   s.IdleTimeoutMs = 20000;
   s.IsSet.IdleTimeoutMs = TRUE;
@@ -27,9 +27,8 @@ QUIC_SETTINGS baseSettings() {
   s.IsSet.KeepAliveIntervalMs = TRUE;
   s.HandshakeIdleTimeoutMs = 8000;
   s.IsSet.HandshakeIdleTimeoutMs = TRUE;
-  // BBR fills long, fast paths far better than loss-based CUBIC when the
-  // path drops a few packets.
-  s.CongestionControlAlgorithm = QUIC_CONGESTION_CONTROL_ALGORITHM_BBR;
+  s.CongestionControlAlgorithm =
+      cc == Cc::Cubic ? QUIC_CONGESTION_CONTROL_ALGORITHM_CUBIC : QUIC_CONGESTION_CONTROL_ALGORITHM_BBR;
   s.IsSet.CongestionControlAlgorithm = TRUE;
   s.StreamRecvWindowDefault = 16 << 20;
   s.IsSet.StreamRecvWindowDefault = TRUE;
@@ -65,33 +64,37 @@ bool Quic::init(std::string& err) {
     err = "RegistrationOpen failed";
     return false;
   }
-  QUIC_SETTINGS s = baseSettings();
-  if (QUIC_FAILED(MsQuic->ConfigurationOpen(reg, &kAlpn, 1, &s, sizeof s, nullptr, &clientCfg))) {
-    err = "ConfigurationOpen failed";
-    return false;
-  }
-  QUIC_CREDENTIAL_CONFIG cred{};
-  cred.Type = QUIC_CREDENTIAL_TYPE_NONE;
-  // The certificate is checked against the fingerprint from signaling instead.
-  cred.Flags = QUIC_CREDENTIAL_FLAG_CLIENT | QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION |
-               QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
-  if (QUIC_STATUS st = MsQuic->ConfigurationLoadCredential(clientCfg, &cred); QUIC_FAILED(st)) {
-    err = "client credentials: " + statusText(st);
-    return false;
+  for (Cc cc : {Cc::Bbr, Cc::Cubic}) {
+    QUIC_SETTINGS s = baseSettings(cc);
+    HQUIC& cfg = clientCfg[(int)cc];
+    if (QUIC_FAILED(MsQuic->ConfigurationOpen(reg, &kAlpn, 1, &s, sizeof s, nullptr, &cfg))) {
+      err = "ConfigurationOpen failed";
+      return false;
+    }
+    QUIC_CREDENTIAL_CONFIG cred{};
+    cred.Type = QUIC_CREDENTIAL_TYPE_NONE;
+    // The certificate is checked against the fingerprint from signaling instead.
+    cred.Flags = QUIC_CREDENTIAL_FLAG_CLIENT | QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION |
+                 QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
+    if (QUIC_STATUS st = MsQuic->ConfigurationLoadCredential(cfg, &cred); QUIC_FAILED(st)) {
+      err = "client credentials: " + statusText(st);
+      return false;
+    }
   }
   return true;
 }
 
 void Quic::cleanup() {
   if (!MsQuic) return;
-  if (clientCfg) MsQuic->ConfigurationClose(clientCfg);
+  for (HQUIC cfg : clientCfg)
+    if (cfg) MsQuic->ConfigurationClose(cfg);
   if (reg) MsQuic->RegistrationClose(reg);
   MsQuicClose(MsQuic);
   MsQuic = nullptr;
 }
 
-HQUIC Quic::serverConfig(PCCERT_CONTEXT cert, std::string& err) {
-  QUIC_SETTINGS s = baseSettings();
+HQUIC Quic::serverConfig(PCCERT_CONTEXT cert, Cc cc, std::string& err) {
+  QUIC_SETTINGS s = baseSettings(cc);
   s.PeerBidiStreamCount = 8192;
   s.IsSet.PeerBidiStreamCount = TRUE;
   HQUIC cfg = nullptr;
@@ -286,7 +289,8 @@ Connection::~Connection() {
 }
 
 std::shared_ptr<Connection> Connection::connect(const sockaddr_in& local, const sockaddr_in& remote,
-                                                const std::string& fingerprint, int timeoutMs, std::string& err) {
+                                                const std::string& fingerprint, Cc cc, int timeoutMs,
+                                                std::string& err) {
   std::shared_ptr<Connection> c(new Connection());
   c->fingerprint_ = fingerprint;
   c->remote_ = remote;
@@ -301,7 +305,7 @@ std::shared_ptr<Connection> Connection::connect(const sockaddr_in& local, const 
   MsQuic->SetParam(c->h_, QUIC_PARAM_CONN_LOCAL_ADDRESS, sizeof la, &la);
   MsQuic->SetParam(c->h_, QUIC_PARAM_CONN_REMOTE_ADDRESS, sizeof ra, &ra);
   c->self_ = c;
-  if (QUIC_STATUS st = MsQuic->ConnectionStart(c->h_, Quic::clientCfg, QUIC_ADDRESS_FAMILY_INET, "p2proxy",
+  if (QUIC_STATUS st = MsQuic->ConnectionStart(c->h_, Quic::clientCfg[(int)cc], QUIC_ADDRESS_FAMILY_INET, "p2proxy",
                                                ntohs(remote.sin_port));
       QUIC_FAILED(st)) {
     c->self_.reset();

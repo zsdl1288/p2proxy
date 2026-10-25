@@ -44,7 +44,11 @@ void webviewFailed(HRESULT hr) {
 
 void showWindow() {
   ShowWindow(g_hwnd, IsIconic(g_hwnd) ? SW_RESTORE : SW_SHOW);
-  SetForegroundWindow(g_hwnd);
+  if (!SetForegroundWindow(g_hwnd)) {
+    // Windows refused the foreground: at least put the window on top.
+    SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+  }
 }
 
 void initWebView() {
@@ -214,11 +218,25 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   }
   cleanupOldFiles();
 
-  // One copy per user (and profile): a second launch brings the first forward.
+  // One copy per user (and profile): launching it again shows the running
+  // copy instead (except from autostart, which passes --minimized).
   std::wstring title = profile().empty() ? L"p2proxy" : L"p2proxy - " + profile();
   HANDLE mutex = CreateMutexW(nullptr, TRUE, (L"Local\\p2proxy-v2-" + profile()).c_str());
   if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    if (HWND w = FindWindowW(kClass, title.c_str())) PostMessageW(w, WM_SHOWAPP, 0, 0);
+    CloseHandle(mutex);
+    if (!minimized) {
+      // The running copy may still be starting up; give it time to make its window.
+      HWND w = nullptr;
+      for (int i = 0; i < 100 && !(w = FindWindowW(kClass, title.c_str())); i++) Sleep(100);
+      if (w) {
+        // We were just started by the user, so we may hand the foreground on;
+        // without this the window would only flash in the taskbar.
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        AllowSetForegroundWindow(pid);
+        PostMessageW(w, WM_SHOWAPP, 0, 0);
+      }
+    }
     return 0;
   }
 

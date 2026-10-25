@@ -46,6 +46,10 @@ target_compile_definitions(p2proxy PRIVATE
   P2PX_UPDATE_PUBKEY="${P2PX_UPDATE_PUBKEY}"
 )
 target_compile_options(p2proxy PRIVATE /W3 /utf-8 /EHsc)
+# app.rc embeds these; without this, editing them would not rebuild the exe.
+set_source_files_properties(src/app.rc PROPERTIES OBJECT_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ui.html;${CMAKE_CURRENT_SOURCE_DIR}/src/app.ico")
+
 # Release signing tool, used by the release workflow (see tools/sign.cpp).
 add_executable(p2proxy-sign tools/sign.cpp)
 target_compile_options(p2proxy-sign PRIVATE /W3 /utf-8)

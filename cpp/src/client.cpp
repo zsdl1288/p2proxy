@@ -8,7 +8,8 @@ namespace p2px {
 
 Client::~Client() { stop(); }
 
-bool Client::start(const std::string& key, uint16_t socksPort, std::string& err) {
+bool Client::start(const std::string& key, uint16_t socksPort, Cc cc, std::string& err) {
+  cc_ = cc;
   keys_ = Keys::derive(key);
   if (!keys_) {
     err = "this does not look like a p2proxy key";
@@ -37,8 +38,67 @@ bool Client::start(const std::string& key, uint16_t socksPort, std::string& err)
         if (auto c = weak.lock()) c->wakeUp();
       });
   maint_ = std::thread([self = shared_from_this()] { self->maintain(); });
-  logf("client started; SOCKS5 proxy on 127.0.0.1:%u", socksPort);
+  std::thread([self = shared_from_this()] { self->statsLoop(); }).detach();
+  logf("client started; SOCKS5 proxy on 127.0.0.1:%u, congestion control %s", socksPort, ccName(cc));
   return true;
+}
+
+void Client::setCc(Cc cc) {
+  if (cc_.exchange(cc) == cc) return;
+  logf("congestion control set to %s; reconnecting", ccName(cc));
+  std::shared_ptr<Connection> c;
+  {
+    std::lock_guard lk(mu_);
+    c = conn_;
+  }
+  if (c) c->shutdown(); // maintain() reconnects with the new setting
+  wakeUp();
+}
+
+// Every 2 seconds: sample what we send, and swap link stats with the exit
+// node. The exchange's round trip is our latency sample for jitter.
+void Client::statsLoop() {
+  std::shared_ptr<Connection> last;
+  while (!stopping_) {
+    for (int i = 0; i < 20 && !stopping_; i++) Sleep(100);
+    std::shared_ptr<Connection> c;
+    {
+      std::lock_guard lk(mu_);
+      c = conn_;
+    }
+    if (!c) continue;
+    if (c != last) { // a new tunnel: start over
+      meter_.clear();
+      peerLoss_ = -1;
+      last = c;
+    }
+    auto s = c->stats();
+    meter_.addCounters(s.SendTotalPackets, lostPackets(s.SendSuspectedLostPackets, s.SendSpuriousLostPackets));
+    json mine = {{"loss", nullptr}, {"rtt", nullptr}, {"jitter", nullptr}};
+    if (double v = meter_.lossPct(); v >= 0) mine["loss"] = std::round(v * 100) / 100;
+    if (double v = meter_.rttMs(); v >= 0) mine["rtt"] = std::round(v);
+    if (double v = meter_.jitterMs(); v >= 0) mine["jitter"] = std::round(v * 10) / 10;
+    std::string err;
+    LARGE_INTEGER f, t0, t1;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t0);
+    auto st = open(kStats, mine.dump(), 5000, err);
+    QueryPerformanceCounter(&t1);
+    double ms = (t1.QuadPart - t0.QuadPart) * 1000.0 / f.QuadPart;
+    // Any answer, even "unknown request" from an older exit node, took one round trip.
+    if (st || err.rfind("exit node: ", 0) == 0) meter_.addRtt(ms);
+    if (!st) continue;
+    std::string body;
+    char buf[1024];
+    int n;
+    while ((n = st->read((uint8_t*)buf, sizeof buf, 5000)) > 0) body.append(buf, n);
+    try {
+      auto r = json::parse(body);
+      auto it = r.find("loss");
+      peerLoss_ = it != r.end() && it->is_number() ? it->get<double>() : -1.0;
+    } catch (...) {
+    }
+  }
 }
 
 void Client::stop() {
@@ -155,7 +215,9 @@ std::shared_ptr<Connection> Client::connectOnce(std::string& err) {
   }
   json answer;
   int64_t offerTs = unixNow();
-  if (!sig_->publish({{"t", "offer"}, {"s", sid}, {"c", mine}, {"tok", token}, {"name", name}}, err)) {
+  Cc cc = cc_;
+  if (!sig_->publish({{"t", "offer"}, {"s", sid}, {"c", mine}, {"tok", token}, {"name", name}, {"cc", ccName(cc)}},
+                     err)) {
     std::lock_guard lk(mu_);
     answers_.erase(sid);
     return nullptr;
@@ -187,7 +249,7 @@ std::shared_ptr<Connection> Client::connectOnce(std::string& err) {
   sockaddr_in local = p.local();
   p.close(); // msquic takes the same port, which the probes opened in the NAT
   Sleep(200); // give the exit node a moment to start listening
-  auto c = Connection::connect(local, *peer, answer.value("fp", ""), 10000, err);
+  auto c = Connection::connect(local, *peer, answer.value("fp", ""), cc, 10000, err);
   if (!c) return nullptr;
   auto st = c->openStream(err);
   if (!st || !writeHeader(*st, kHello, token + "\n" + name) || !readStatus(*st, err, 10000)) {
@@ -271,12 +333,17 @@ bool Client::updateNode(std::string& err) {
 
 json Client::state() {
   std::lock_guard lk(mu_);
-  json j = {{"connected", conn_ != nullptr}, {"error", lastErr_}, {"socks_port", socks_.port()}};
+  json j = {{"connected", conn_ != nullptr}, {"error", lastErr_}, {"socks_port", socks_.port()}, {"cc", ccName(cc_)}};
   if (conn_) {
     auto s = conn_->stats();
+    auto orNull = [](double v) { return v >= 0 ? json(v) : json(nullptr); };
+    double probe = meter_.rttMs();
     j["remote"] = conn_->remote();
     j["since"] = upSince_;
-    j["rtt_ms"] = s.Rtt / 1000.0;
+    j["rtt_ms"] = probe >= 0 ? probe : s.Rtt / 1000.0;
+    j["jitter_ms"] = orNull(meter_.jitterMs());
+    j["loss_up_pct"] = orNull(meter_.lossPct()); // what we send
+    j["loss_down_pct"] = orNull(peerLoss_);      // what the exit node sends
     j["sent"] = s.SendTotalBytes;
     j["received"] = s.RecvTotalBytes;
   }

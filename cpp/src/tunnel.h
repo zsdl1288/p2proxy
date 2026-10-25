@@ -17,6 +17,8 @@ enum Kind : uint8_t {
   kSpeedReport = 6, // target is the client's speed test result as JSON, for the server's log
   kFetch = 7,       // the server downloads target (a GitHub URL) and sends the body
   kUpdate = 8,      // the server installs the latest release, answers, then restarts
+  kStats = 9,       // every 2 s: target is the client's link stats as JSON, the reply the server's;
+                    // its round trip is also the client's latency sample
   kHello = 16,    // first stream: target is "<session token>\n<client name>"
 };
 

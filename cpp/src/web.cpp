@@ -81,6 +81,11 @@ bool WebServer::start(uint16_t port, std::string& err) {
     App::get().regenerateServerKey();
     sendJson(res, result(true, ""));
   });
+  s.Post("/api/cc", [](const httplib::Request& req, httplib::Response& res) {
+    std::string err;
+    bool ok = App::get().setCongestionControl(body(req).value("cc", ""), err);
+    sendJson(res, result(ok, err));
+  });
   s.Post("/api/autostart", [](const httplib::Request& req, httplib::Response& res) {
     bool ok = App::get().setAutostart(body(req).value("enabled", false));
     sendJson(res, result(ok, "could not change the startup setting"));

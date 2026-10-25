@@ -9,7 +9,10 @@ namespace p2px {
 namespace {
 
 constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kRunValue[] = L"p2proxy";
+
+// Each --profile gets its own startup entry, so copies do not overwrite
+// each other's setting.
+std::wstring runValue() { return profile().empty() ? L"p2proxy" : L"p2proxy-" + profile(); }
 
 std::wstring configPath() { return appDataDir() + L"\\config.json"; }
 
@@ -46,6 +49,7 @@ void App::load() {
       serverKey_ = unprotect(j.value("server_key", ""));
       clientKey_ = unprotect(j.value("client_key", ""));
       subToken_ = j.value("sub_token", "");
+      cc_ = ccName(parseCc(j.value("cc", "bbr")));
     } catch (...) {
       logf("config.json is unreadable; starting fresh");
     }
@@ -57,7 +61,8 @@ void App::save() {
   json j = {{"role", role_},
             {"server_key", protect(serverKey_)},
             {"client_key", protect(clientKey_)},
-            {"sub_token", subToken_}};
+            {"sub_token", subToken_},
+            {"cc", cc_}};
   std::ofstream f(configPath(), std::ios::trunc);
   f << j.dump(2);
 }
@@ -83,7 +88,7 @@ void App::startRole() {
     }
   } else if (role_ == "client" && !clientKey_.empty()) {
     client_ = std::make_shared<Client>();
-    if (!client_->start(clientKey_, socksPort, err)) {
+    if (!client_->start(clientKey_, socksPort, parseCc(cc_), err)) {
       roleError_ = err;
       logf("cannot start client: %s", err.c_str());
       client_.reset();
@@ -246,16 +251,37 @@ void App::regenerateServerKey() {
   startRole();
 }
 
+bool App::setCongestionControl(const std::string& cc, std::string& err) {
+  if (cc != "bbr" && cc != "cubic") {
+    err = "unknown congestion control";
+    return false;
+  }
+  std::shared_ptr<Client> c;
+  {
+    std::lock_guard lk(mu_);
+    cc_ = cc;
+    save();
+    c = client_;
+  }
+  if (c) c->setCc(parseCc(cc));
+  return true;
+}
+
 bool App::autostart() {
   wchar_t buf[1024];
   DWORD len = sizeof buf;
-  return RegGetValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, RRF_RT_REG_SZ, nullptr, buf, &len) == ERROR_SUCCESS;
+  return RegGetValueW(HKEY_CURRENT_USER, kRunKey, runValue().c_str(), RRF_RT_REG_SZ, nullptr, buf, &len) ==
+         ERROR_SUCCESS;
 }
 
 bool App::setAutostart(bool on) {
-  if (!on) return RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, kRunValue) == ERROR_SUCCESS || !autostart();
-  std::wstring cmd = L"\"" + exePath() + L"\" --minimized";
-  return RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, kRunValue, REG_SZ, cmd.c_str(),
+  if (!on) return RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, runValue().c_str()) == ERROR_SUCCESS || !autostart();
+  std::wstring cmd = L"\"" + exePath() + L"\"";
+  if (!profile().empty())
+    cmd += L" --profile \"" + profile() + L"\" --ui-port " + std::to_wstring(uiPort) + L" --socks-port " +
+           std::to_wstring(socksPort);
+  cmd += L" --minimized";
+  return RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, runValue().c_str(), REG_SZ, cmd.c_str(),
                          DWORD((cmd.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 }
 
@@ -276,7 +302,7 @@ json App::state() {
     std::lock_guard lk(mu_);
     s = server_;
     c = client_;
-    j = {{"version", P2PX_VERSION}, {"role", role_}, {"role_error", roleError_}};
+    j = {{"version", P2PX_VERSION}, {"role", role_}, {"role_error", roleError_}, {"cc", cc_}};
     if (role_ == "server") j["server_key"] = serverKey_;
     if (role_ == "client") {
       j["client_key_set"] = !clientKey_.empty();

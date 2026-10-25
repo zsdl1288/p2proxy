@@ -9,7 +9,8 @@ namespace p2px {
 
 Server::~Server() {
   stop();
-  if (cfg_) MsQuic->ConfigurationClose(cfg_);
+  for (HQUIC cfg : cfgs_)
+    if (cfg) MsQuic->ConfigurationClose(cfg);
   freeServerCert(cert_);
 }
 
@@ -20,8 +21,8 @@ bool Server::start(const std::string& key, std::string& err) {
     return false;
   }
   if (!createServerCert(cert_, err)) return false;
-  cfg_ = Quic::serverConfig(cert_.ctx, err);
-  if (!cfg_) return false;
+  for (Cc cc : {Cc::Bbr, Cc::Cubic})
+    if (!(cfgs_[(int)cc] = Quic::serverConfig(cert_.ctx, cc, err))) return false;
   id_ = hex(randomBytes(8));
   started_ = unixNow();
   sig_ = std::make_unique<Signaler>(*keys_);
@@ -133,6 +134,7 @@ void Server::handleOffer(json m) {
 
   auto sess = std::make_shared<Session>();
   sess->token = m.value("tok", "");
+  sess->cc = parseCc(m.value("cc", "bbr")); // older clients send none: BBR
   sess->name = name;
   std::weak_ptr<Server> weak = shared_from_this();
   auto listener = Listener::start(
@@ -164,7 +166,8 @@ bool Server::accept(HQUIC h, const sockaddr_in& remote, std::shared_ptr<Session>
   client->addr = addrStr(remote);
   std::weak_ptr<Server> weak = shared_from_this();
   std::weak_ptr<Client> wc = client;
-  client->conn = Connection::adopt(h, cfg_, remote, [weak, sess, wc](std::shared_ptr<Stream> st) {
+  client->cc = sess->cc;
+  client->conn = Connection::adopt(h, cfgs_[(int)sess->cc], remote, [weak, sess, wc](std::shared_ptr<Stream> st) {
     auto s = weak.lock();
     if (!s) {
       st->abort();
@@ -195,8 +198,12 @@ void Server::watch(std::shared_ptr<Client> c) {
     std::lock_guard lk(mu_);
     clients_.push_back(c);
   }
-  logf("%s connected from %s", c->name.c_str(), c->addr.c_str());
-  c->conn->waitClosed(-1);
+  logf("%s connected from %s (%s)", c->name.c_str(), c->addr.c_str(), ccName(c->cc));
+  // Sample what we send to this client, for its loss rate.
+  while (!c->conn->waitClosed(2000)) {
+    auto s = c->conn->stats();
+    c->meter.addCounters(s.SendTotalPackets, lostPackets(s.SendSuspectedLostPackets, s.SendSpuriousLostPackets));
+  }
   logf("%s disconnected: %s", c->name.c_str(), c->conn->reason().c_str());
   std::lock_guard lk(mu_);
   std::erase(clients_, c);
@@ -312,6 +319,30 @@ void Server::serveStream(std::shared_ptr<Session> sess, std::weak_ptr<Client> wc
     st->finish();
     return;
   }
+  case kStats: {
+    // The client tells us its side of the link and gets ours back.
+    auto c = wc.lock();
+    json reply = {{"loss", nullptr}};
+    if (c) {
+      try {
+        json r = json::parse(target);
+        auto num = [&](const char* k) {
+          auto it = r.find(k);
+          return it != r.end() && it->is_number() ? it->get<double>() : -1.0;
+        };
+        c->peerLoss = num("loss");
+        c->peerRtt = num("rtt");
+        c->peerJitter = num("jitter");
+      } catch (...) {
+      }
+      if (double l = c->meter.lossPct(); l >= 0) reply["loss"] = l;
+    }
+    writeStatus(*st, "");
+    std::string s = reply.dump();
+    st->write(s.data(), s.size());
+    st->finish();
+    return;
+  }
   case kSpeedReport: {
     std::string name = "client";
     if (auto c = wc.lock()) name = c->name;
@@ -411,12 +442,17 @@ void Server::serveUdp(std::shared_ptr<Stream> st) {
 json Server::state() {
   std::lock_guard lk(mu_);
   json cs = json::array();
+  auto orNull = [](double v) { return v >= 0 ? json(v) : json(nullptr); };
   for (auto& c : clients_) {
     auto s = c->conn->stats();
     cs.push_back({{"name", c->name},
                   {"addr", c->addr},
                   {"since", c->since},
-                  {"rtt_ms", s.Rtt / 1000.0},
+                  {"rtt_ms", c->peerRtt >= 0 ? c->peerRtt.load() : s.Rtt / 1000.0},
+                  {"jitter_ms", orNull(c->peerJitter)},
+                  {"loss_to_client_pct", orNull(c->meter.lossPct())},
+                  {"loss_from_client_pct", orNull(c->peerLoss)},
+                  {"cc", ccName(c->cc)},
                   {"sent", s.SendTotalBytes},
                   {"received", s.RecvTotalBytes}});
   }

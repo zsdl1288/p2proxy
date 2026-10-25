@@ -16,13 +16,20 @@ namespace p2px {
 
 extern const QUIC_API_TABLE* MsQuic;
 
+// Congestion control. BBR fills long, fast paths; CUBIC backs off on loss,
+// which can be steadier where the path polices or drops traffic. The client
+// picks one and the exit node uses the same for that connection.
+enum class Cc { Bbr, Cubic };
+inline Cc parseCc(const std::string& s) { return s == "cubic" ? Cc::Cubic : Cc::Bbr; }
+inline const char* ccName(Cc c) { return c == Cc::Cubic ? "cubic" : "bbr"; }
+
 // Process-wide msquic state.
 struct Quic {
   static bool init(std::string& err);
   static void cleanup();
   static HQUIC reg;
-  static HQUIC clientCfg;
-  static HQUIC serverConfig(PCCERT_CONTEXT cert, std::string& err); // caller closes it
+  static HQUIC clientCfg[2]; // indexed by Cc
+  static HQUIC serverConfig(PCCERT_CONTEXT cert, Cc cc, std::string& err); // caller closes it
 };
 
 // A QUIC stream with a blocking API for worker threads. Received data is
@@ -61,7 +68,8 @@ public:
   // Client: connects from a local address (the port hole punching opened) and
   // accepts the server only if its certificate has the expected fingerprint.
   static std::shared_ptr<Connection> connect(const sockaddr_in& local, const sockaddr_in& remote,
-                                             const std::string& fingerprint, int timeoutMs, std::string& err);
+                                             const std::string& fingerprint, Cc cc, int timeoutMs,
+                                             std::string& err);
   // Server: takes over a new connection from a listener (call from its callback).
   static std::shared_ptr<Connection> adopt(HQUIC h, HQUIC cfg, const sockaddr_in& remote, StreamHandler onStream);
 

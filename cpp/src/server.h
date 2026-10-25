@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "cert.h"
+#include "linkmeter.h"
 #include "signal.h"
 #include "tunnel.h"
 
@@ -32,10 +33,16 @@ private:
     std::shared_ptr<Connection> conn;
     std::atomic<int> speedStreams{0};    // speed-test download streams running
     std::atomic<int64_t> speedLogged{0}; // when a speed-test start was last logged
+    Cc cc = Cc::Bbr;
+    LinkMeter meter; // loss of what we send to this client
+    // What the client reports (kStats): loss of what it sends us, and the
+    // round trip and jitter it measures. -1 means unknown.
+    std::atomic<double> peerLoss{-1}, peerRtt{-1}, peerJitter{-1};
   };
   // One client's connection attempt (one signaling offer).
   struct Session {
     std::string token, name;
+    Cc cc = Cc::Bbr;
     std::mutex mu;
     std::condition_variable cv;
     bool authed = false, taken = false;
@@ -53,7 +60,7 @@ private:
   std::optional<Keys> keys_;
   std::unique_ptr<Signaler> sig_;
   ServerCert cert_;
-  HQUIC cfg_ = nullptr;
+  HQUIC cfgs_[2] = {nullptr, nullptr}; // one per congestion control, indexed by Cc
   std::string id_;
   int64_t started_ = 0;
   std::atomic<bool> stopping_{false}, ready_{false}, conflict_{false};
