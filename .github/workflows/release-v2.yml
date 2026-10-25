@@ -46,7 +46,8 @@ jobs:
           }
           Compress-Archive "dist\$name" "dist\$name.zip"
           $h = (Get-FileHash "dist\$name.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content dist\checksums.txt "$h  $name.zip"
+          # LF and no BOM, so `sha256sum -c checksums.txt` works everywhere.
+          [IO.File]::WriteAllText("$PWD\dist\checksums.txt", "$h  $name.zip`n", [Text.UTF8Encoding]::new($false))
 
       - name: Publish
         shell: pwsh
