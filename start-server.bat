@@ -4,7 +4,8 @@ rem The loop restarts p2proxy after a crash or a self-update.
 cd /d "%~dp0"
 set P2PX_SUPERVISED=1
 :loop
-p2proxy.exe server
+rem Full path: cmd may be set not to search the current directory.
+"%~dp0p2proxy.exe" server
 echo p2proxy exited, restarting in 3 seconds...
 ping -n 4 127.0.0.1 >nul
 goto loop
