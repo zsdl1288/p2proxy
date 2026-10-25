@@ -51,7 +51,7 @@ jobs:
           $runtime = @("cpp\build\p2proxy.exe", "cpp\build\msquic.dll") +
                      ('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll' | ForEach-Object { Join-Path $crt.FullName $_ })
           Copy-Item $runtime dist
-          Copy-Item $runtime, cpp\README.md, LICENSE "dist\$name"
+          Copy-Item ($runtime + 'cpp\README.md', 'LICENSE') "dist\$name"
           Compress-Archive "dist\$name" "dist\$name.zip"
           Remove-Item -Recurse "dist\$name"
           # LF and no BOM, so `sha256sum -c checksums.txt` works everywhere.
