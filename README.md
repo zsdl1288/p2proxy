@@ -40,7 +40,7 @@
 p2proxy.exe genkey > key.txt
 ```
 
-把整个文件夹（含 `key.txt`）拷到 A 和 B 上，两边的 `key.txt` 必须完全一样。
+这个文件夹留在 B 上。A 只需要知道 `key.txt` 里的那一行内容（第三步会在控制面板里粘贴），两边必须是同一个密钥。
 **密钥等于访问 B 网络的钥匙**，请用安全的方式传输，不要公开，也不要提交到 Git。
 
 ### 第二步：B（出口机）
@@ -53,7 +53,7 @@ waiting for clients via https://ntfy.sh
 this node can be reached at: <B的公网IP>:40400, 192.168.x.x:40400
 ```
 
-B 必须一直开机、不能睡眠（设置 → 系统 → 电源 → 睡眠：从不）。
+**这个命令行窗口要一直开着**（可以最小化），关掉窗口 B 就停止了。B 也必须一直开机、不能睡眠（设置 → 系统 → 电源 → 睡眠：从不）。
 
 **开机自启**（可选，以管理员身份在 cmd 里运行一次，路径换成你的实际路径）：
 
@@ -63,9 +63,10 @@ schtasks /Create /TN p2proxy-server /SC ONSTART /RU SYSTEM /RL HIGHEST /TR "C:\p
 
 ### 第三步：A
 
-1. 双击 `start-client.bat`，看到 `tunnel up: ... connection(s) to exit node` 就说明隧道已经通了。
-2. 浏览器打开 http://127.0.0.1:1090 ，状态应显示"已连接"。
-3. 先不开 Clash，单独测一下（cmd 里运行）。返回的应该是 **B 的公网 IP**：
+1. 下载并解压同一个 zip，**双击 `p2proxy.exe`**。浏览器会自动打开控制面板 http://127.0.0.1:1090 。
+2. 第一次使用时，面板顶部会显示"设置密钥"：把 B 上 `key.txt` 的内容粘贴进去，点"保存并连接"。密钥会保存到 A 的 `key.txt`，以后双击就会直接连接。
+3. 状态显示"已连接"就说明隧道通了。命令行窗口同样要保持打开（可以最小化）。想要崩溃或更新后自动重启，可以改用双击 `start-client.bat`。
+4. 先不开 Clash，单独测一下（cmd 里运行）。返回的应该是 **B 的公网 IP**：
    ```
    curl -x socks5h://127.0.0.1:1080 https://api.ipify.org
    ```

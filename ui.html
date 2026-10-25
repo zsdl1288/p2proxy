@@ -51,12 +51,26 @@ button:disabled { opacity: .45; cursor: default; }
 .ver:first-of-type { border-top: 0; }
 .ver b { display: block; }
 a { color: var(--accent); }
+input { flex: 1; min-width: 220px; font: inherit; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--tile); color: var(--text); }
+.card.key { border-color: var(--accent); }
+.link { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 400; font-size: 13px; }
 @media (max-width: 480px) { .tiles { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <main>
   <header><h1>p2proxy</h1><span class="pill" id="version">…</span></header>
+
+  <section class="card key" id="keyCard" hidden>
+    <h2 id="keyTitle">设置密钥</h2>
+    <p class="muted" style="margin:0 0 12px">把出口节点 B 上 <b>key.txt</b> 里的内容粘贴到这里。A 和 B 必须使用同一个密钥。保存后会自动开始连接。</p>
+    <div class="row">
+      <input id="keyInput" type="password" placeholder="粘贴密钥" autocomplete="off" spellcheck="false">
+      <button id="keySave">保存并连接</button>
+    </div>
+    <div class="hint" id="keyMsg"></div>
+  </section>
 
   <section class="card">
     <div class="state"><span class="dot" id="dot"></span><span id="state">正在读取状态…</span></div>
@@ -68,6 +82,7 @@ a { color: var(--accent); }
       <div><span>已发送 / 已接收</span><b id="traffic">—</b></div>
     </div>
     <div class="err" id="error" hidden></div>
+    <div style="margin-top:12px" id="changeKeyRow" hidden><button class="link" id="changeKey">更换密钥</button></div>
   </section>
 
   <section class="card">
@@ -101,10 +116,13 @@ const $ = id => document.getElementById(id);
 const phases = { tunnel_down: "隧道下载", tunnel_up: "隧道上传", net_down: "经 B 上网下载" };
 let status = null, busy = false;
 
-async function api(path, method = "GET") {
-  const r = await fetch(path, { method, headers: method === "GET" ? {} : { "X-P2PX": "1" } });
+async function api(path, method = "GET", body) {
+  const headers = method === "GET" ? {} : { "X-P2PX": "1" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return r.json();
 }
+let keyOpen = false;
 function mbps(v) { return v >= 100 ? v.toFixed(0) : v.toFixed(1); }
 function bytes(n) {
   const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
@@ -142,8 +160,12 @@ function render() {
     return;
   }
   $("version").textContent = s.version;
-  $("dot").className = "dot " + (s.connected ? "ok" : "wait");
-  $("state").textContent = s.connected ? "已连接，正在通过 B 上网" : "正在连接出口节点…（此时无法上网，不会直连）";
+  $("keyCard").hidden = s.configured && !keyOpen;
+  $("keyTitle").textContent = s.configured ? "更换密钥" : "设置密钥";
+  $("changeKeyRow").hidden = !s.configured || keyOpen;
+  $("dot").className = "dot " + (s.connected ? "ok" : s.configured ? "wait" : "");
+  $("state").textContent = !s.configured ? "还没有设置密钥"
+    : s.connected ? "已连接，正在通过 B 上网" : "正在连接出口节点…（此时无法上网，不会直连）";
   $("remote").textContent = s.remote || "—";
   $("rtt").textContent = s.connected ? s.rtt_ms.toFixed(0) + " ms" : "—";
   $("uptime").textContent = s.connected ? duration(Math.floor(Date.now() / 1000) - s.up_since) : "—";
@@ -235,6 +257,24 @@ async function update(target, label) {
   $("updMsg").textContent = r.error ? "更新失败：" + r.error : label + "已更新，正在重启…";
   setTimeout(() => { busy = false; refresh(); }, 8000);
 }
+$("changeKey").onclick = () => { keyOpen = true; render(); $("keyInput").focus(); };
+$("keySave").onclick = async () => {
+  const key = $("keyInput").value.trim();
+  if (!key) { $("keyMsg").textContent = "请先粘贴密钥。"; return; }
+  $("keySave").disabled = true;
+  let r;
+  try { r = await api("/api/key", "POST", { key }); } catch { r = { error: "无法连接控制面板" }; }
+  if (r.error) {
+    $("keyMsg").textContent = "保存失败：" + r.error;
+    $("keySave").disabled = false;
+    return;
+  }
+  $("keyInput").value = "";
+  $("keyMsg").textContent = "已保存，正在重启并连接…";
+  keyOpen = false;
+  setTimeout(() => { $("keySave").disabled = false; $("keyMsg").textContent = ""; refresh(); }, 4000);
+};
+$("keyInput").addEventListener("keydown", e => { if (e.key === "Enter") $("keySave").click(); });
 $("updA").onclick = () => update("client", "本机");
 $("updB").onclick = () => update("node", "出口节点 B");
 

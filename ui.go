@@ -3,9 +3,11 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -29,6 +31,34 @@ func (c *client) serveUI(ln net.Listener) {
 	mux.HandleFunc("POST /api/speedtest", func(w http.ResponseWriter, r *http.Request) {
 		c.startSpeedTest()
 		writeJSON(w, c.speed.snapshot())
+	})
+	mux.HandleFunc("POST /api/key", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+			writeJSON(w, apiResult{Error: "bad request"})
+			return
+		}
+		if c.cfg.keyOverride {
+			writeJSON(w, apiResult{Error: "the key is set with -key or P2PX_KEY; remove that first"})
+			return
+		}
+		secret := strings.TrimSpace(body.Key)
+		if _, err := newKeys(secret); err != nil {
+			writeJSON(w, apiResult{Error: "this does not look like a p2proxy key (it should be the content of key.txt on the exit node)"})
+			return
+		}
+		if err := saveKeyFile(secret); err != nil {
+			writeJSON(w, apiResult{Error: err.Error()})
+			return
+		}
+		log.Printf("key saved to key.txt; restarting")
+		writeJSON(w, apiResult{OK: true, Message: "saved; restarting"})
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			restartSelf()
+		}()
 	})
 	mux.HandleFunc("POST /api/check", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := c.checkRelease(); err != nil {
@@ -92,6 +122,7 @@ type apiResult struct {
 
 type clientStatus struct {
 	Version    string    `json:"version"`
+	Configured bool      `json:"configured"` // a key is set
 	Connected  bool      `json:"connected"`
 	Error      string    `json:"error,omitempty"`
 	Remote     string    `json:"remote,omitempty"`
@@ -108,7 +139,7 @@ type clientStatus struct {
 }
 
 func (c *client) status() clientStatus {
-	s := clientStatus{Version: version, Updates: updatesEnabled() == nil, Updating: c.updating.Load()}
+	s := clientStatus{Version: version, Configured: c.k != nil, Updates: updatesEnabled() == nil, Updating: c.updating.Load()}
 	c.mu.Lock()
 	conns := c.conns
 	s.Error, s.Node = c.lastErr, c.node

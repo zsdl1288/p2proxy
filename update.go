@@ -259,9 +259,9 @@ func download(ctx context.Context, hc *http.Client, url, dst, wantSHA256 string)
 	return nil
 }
 
-// restartSelf starts the freshly installed executable and exits. Under the
-// start-*.bat loop (P2PX_SUPERVISED=1) it just exits and lets the loop
-// restart it.
+// restartSelf starts a fresh copy of the executable (after an update or a
+// key change) and exits. Under the start-*.bat loop (P2PX_SUPERVISED=1) it
+// just exits and lets the loop restart it.
 func restartSelf() {
 	if os.Getenv("P2PX_SUPERVISED") != "" {
 		log.Printf("exiting so the new version starts")
@@ -269,6 +269,7 @@ func restartSelf() {
 	}
 	cmd := exec.Command(exePath, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(), "P2PX_NO_OPEN=1") // the dashboard is already open
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("could not start the new version (%v); please start p2proxy again", err)
 	}

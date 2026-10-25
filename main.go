@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -21,6 +24,7 @@ import (
 const usage = `p2proxy - 点对点网络代理
 
 用法:
+  p2proxy                        （直接双击）启动客户端并打开控制面板
   p2proxy genkey                 生成一个共享密钥（A 和 B 用同一个）
   p2proxy server [选项]           在 B（出口机）上运行
   p2proxy client [选项]           在 A（使用 B 网络的机器）上运行
@@ -28,7 +32,8 @@ const usage = `p2proxy - 点对点网络代理
   p2proxy update [-node]         更新到最新版本；-node 表示让 A 远程更新 B
   p2proxy version                显示版本
 
-密钥通过 -key、环境变量 P2PX_KEY，或 p2proxy.exe 同目录的 key.txt 提供。
+密钥通过 -key、环境变量 P2PX_KEY，或 p2proxy.exe 同目录的 key.txt 提供；
+客户端也可以在控制面板里设置密钥。
 运行 "p2proxy server -h" 或 "p2proxy client -h" 查看选项。
 `
 
@@ -36,11 +41,14 @@ const defaultUI = "127.0.0.1:1090"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		// Double-clicked: be the client and show the dashboard.
+		runClientCmd(nil, true)
+		return
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
+	case "help", "-h", "--help":
+		fmt.Print(usage)
 	case "genkey":
 		fmt.Println(genKey())
 	case "version", "-v", "--version":
@@ -62,27 +70,7 @@ func main() {
 			iface:     *iface,
 		}))
 	case "client":
-		fs := flag.NewFlagSet("client", flag.ExitOnError)
-		key := fs.String("key", os.Getenv("P2PX_KEY"), "共享密钥")
-		listen := fs.String("listen", "127.0.0.1:1080", "本地 SOCKS5/HTTP 代理监听地址")
-		ui := fs.String("ui", defaultUI, "控制面板地址（测速、更新）；设为空则关闭")
-		peer := fs.String("peer", "", "直接连接 B 的地址 host:port（B 有公网 IPv6 或做了端口转发时可用），不走打洞信令")
-		signal := fs.String("signal", "https://ntfy.sh", "用于交换地址的 ntfy 服务器")
-		iface := fs.String("iface", "auto", `p2proxy 自身流量走的网卡: auto（自动选物理网卡）、none（跟随系统路由）或网卡名`)
-		conns := fs.Int("conns", 1, "到 B 的并行 QUIC 连接数（1-8）；丢包多的长距离线路可以试试 4")
-		speedURL := fs.String("speed-url", "", "测速时经 B 下载的大文件地址（例如你自己服务器上的文件）；不设置则只测隧道")
-		fs.Parse(args)
-		k := mustKeys(*key)
-		cleanupOldBinary()
-		log.Fatal(runClient(k, clientConfig{
-			listen:   *listen,
-			ui:       *ui,
-			peer:     *peer,
-			signal:   *signal,
-			iface:    *iface,
-			conns:    min(max(*conns, 1), 8),
-			speedURL: *speedURL,
-		}))
+		runClientCmd(args, false)
 	case "speedtest":
 		fs := flag.NewFlagSet("speedtest", flag.ExitOnError)
 		ui := fs.String("ui", defaultUI, "client 的控制面板地址")
@@ -101,6 +89,99 @@ func main() {
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+}
+
+// runClientCmd starts the client. Without a usable key it still serves the
+// dashboard, where the key can be entered. doubleClicked means it was started
+// from Explorer, so errors wait for Enter instead of closing the window.
+func runClientCmd(args []string, doubleClicked bool) {
+	fs := flag.NewFlagSet("client", flag.ExitOnError)
+	key := fs.String("key", os.Getenv("P2PX_KEY"), "共享密钥（也可以在控制面板里设置）")
+	listen := fs.String("listen", "127.0.0.1:1080", "本地 SOCKS5/HTTP 代理监听地址")
+	ui := fs.String("ui", defaultUI, "控制面板地址（密钥、测速、更新）；设为空则关闭")
+	peer := fs.String("peer", "", "直接连接 B 的地址 host:port（B 有公网 IPv6 或做了端口转发时可用），不走打洞信令")
+	signal := fs.String("signal", "https://ntfy.sh", "用于交换地址的 ntfy 服务器")
+	iface := fs.String("iface", "auto", `p2proxy 自身流量走的网卡: auto（自动选物理网卡）、none（跟随系统路由）或网卡名`)
+	conns := fs.Int("conns", 1, "到 B 的并行 QUIC 连接数（1-8）；丢包多的长距离线路可以试试 4")
+	speedURL := fs.String("speed-url", "", "测速时经 B 下载的大文件地址（例如你自己服务器上的文件）；不设置则只测隧道")
+	fs.Parse(args)
+	fatal := log.Fatal
+	if doubleClicked {
+		fatal = func(v ...any) {
+			log.Print(v...)
+			fmt.Print("\n按回车键关闭窗口…")
+			bufio.NewReader(os.Stdin).ReadString('\n')
+			os.Exit(1)
+		}
+		// Started a second time: show the running copy instead.
+		if *ui != "" && dashboardRunning(*ui) {
+			log.Printf("p2proxy is already running; opening its dashboard")
+			openBrowser("http://" + *ui + "/")
+			return
+		}
+	}
+	cleanupOldBinary()
+
+	secret := *key
+	if secret == "" {
+		secret = readKeyFile()
+	}
+	k, err := newKeys(secret)
+	if err != nil {
+		if *ui == "" {
+			fatal(err)
+		}
+		log.Printf("no key yet (%v); enter it in the dashboard", err)
+		k = nil
+	}
+	fatal(runClient(k, clientConfig{
+		listen:      *listen,
+		ui:          *ui,
+		peer:        *peer,
+		signal:      *signal,
+		iface:       *iface,
+		conns:       min(max(*conns, 1), 8),
+		speedURL:    *speedURL,
+		openUI:      doubleClicked || k == nil,
+		keyOverride: *key != "",
+	}))
+}
+
+func dashboardRunning(addr string) bool {
+	hc := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+	resp, err := hc.Get("http://" + addr + "/api/status")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// saveKeyFile stores the key in key.txt next to the executable.
+func saveKeyFile(secret string) error {
+	if exePath == "" {
+		return errors.New("cannot locate the executable")
+	}
+	p := filepath.Join(filepath.Dir(exePath), "key.txt")
+	if err := os.WriteFile(p+".tmp", []byte(secret+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("open %s in your browser", url)
 	}
 }
 

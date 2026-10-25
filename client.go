@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,9 @@ type clientConfig struct {
 	iface    string
 	conns    int
 	speedURL string // large file downloaded through the tunnel by the speed test
+
+	openUI      bool // open the dashboard in the browser at startup
+	keyOverride bool // the key came from -key or P2PX_KEY, not key.txt
 }
 
 // client keeps the tunnel to the exit node alive and serves the local proxy
@@ -32,7 +36,7 @@ type clientConfig struct {
 // directly.
 type client struct {
 	cfg  clientConfig
-	k    *keys
+	k    *keys // nil until a key is set in the dashboard
 	env  *netEnv
 	sig  *signaler
 	tlsc *tls.Config
@@ -88,7 +92,6 @@ func runClient(k *keys, cfg clientConfig) error {
 		cfg:     cfg,
 		k:       k,
 		env:     env,
-		tlsc:    k.clientTLS(),
 		wake:    make(chan struct{}, 1),
 		answers: map[string]chan []string{},
 		changed: make(chan struct{}),
@@ -99,15 +102,19 @@ func runClient(k *keys, cfg clientConfig) error {
 		},
 		IdleConnTimeout: 30 * time.Second,
 	}}
-	if cfg.peer == "" {
-		if cfg.signal == "" {
-			return errors.New("need either -peer or a signaling server")
+	// Without a key only the dashboard is useful; saving one there restarts us.
+	if k != nil {
+		c.tlsc = k.clientTLS()
+		if cfg.peer == "" {
+			if cfg.signal == "" {
+				return errors.New("need either -peer or a signaling server")
+			}
+			c.sig = newSignaler(cfg.signal, k, env)
+			// Always subscribed: answers arrive here, and so does the exit
+			// node's "hello" when it restarts. A successful (re)subscription
+			// also means our network is back, which is worth an immediate retry.
+			go c.sig.subscribe(context.Background(), time.Now().Add(-5*time.Second).Unix(), c.onSignal, c.nudge)
 		}
-		c.sig = newSignaler(cfg.signal, k, env)
-		// Always subscribed: answers arrive here, and so does the exit node's
-		// "hello" when it restarts. A successful (re)subscription also means
-		// our network is back, which is worth an immediate retry.
-		go c.sig.subscribe(context.Background(), time.Now().Add(-5*time.Second).Unix(), c.onSignal, c.nudge)
 	}
 	ln, err := retryListen(func() (net.Listener, error) { return net.Listen("tcp", cfg.listen) })
 	if err != nil {
@@ -119,11 +126,18 @@ func runClient(k *keys, cfg clientConfig) error {
 		if err != nil {
 			return fmt.Errorf("dashboard: %w", err)
 		}
-		log.Printf("dashboard: http://%s/", uiLn.Addr())
+		url := "http://" + uiLn.Addr().String() + "/"
+		log.Printf("dashboard: %s", url)
 		go c.serveUI(uiLn)
+		// P2PX_NO_OPEN: restarted by ourselves; the page is already open.
+		if cfg.openUI && os.Getenv("P2PX_NO_OPEN") == "" {
+			openBrowser(url)
+		}
 	}
-	go c.maintain()
-	go c.checkLoop()
+	if k != nil {
+		go c.maintain()
+		go c.checkLoop()
+	}
 	return serveProxy(ln, c.open)
 }
 
@@ -395,6 +409,9 @@ func (c *client) open(ctx context.Context, kind byte, target string) (net.Conn, 
 // request is open with a custom limit on how long the exit node may take to
 // answer.
 func (c *client) request(ctx context.Context, kind byte, target string, wait time.Duration) (net.Conn, error) {
+	if c.k == nil {
+		return nil, errors.New("no key set yet; enter it in the dashboard")
+	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	conn, err := c.pick(ctx)
