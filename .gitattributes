@@ -1,3 +1,4 @@
 * text=auto
-# cmd.exe needs CRLF, also when the release workflow checks out on Linux.
+# cmd.exe needs CRLF, whatever the checkout's line-ending settings.
 *.bat text eol=crlf
+*.cmd text eol=crlf
