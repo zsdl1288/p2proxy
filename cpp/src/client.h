@@ -27,9 +27,16 @@ public:
   bool startSpeedTest();
   json speedState();
 
+  // Downloads a GitHub URL through the exit node (see update.h).
+  bool fetch(const std::string& url, std::string& body, std::string& err);
+  // Asks the exit node to install the latest release and restart.
+  bool updateNode(std::string& err);
+  std::string nodeVersion();
+
 private:
   void maintain();
   std::shared_ptr<Connection> connectOnce(std::string& err);
+  void fetchNodeInfo();
   void onSignal(const json& m);
   void wakeUp();
   void runSpeedTest();
@@ -46,9 +53,9 @@ private:
   std::condition_variable cv_;
   std::shared_ptr<Connection> conn_;
   int64_t upSince_ = 0;
-  std::string lastErr_, remote_;
+  std::string lastErr_, remote_, nodeVersion_;
   bool wake_ = false;
-  uint64_t hellos_ = 0; // exit node (re)starts seen
+  int64_t helloTs_ = 0; // when the exit node last announced a (re)start
   std::map<std::string, json> answers_; // offer session id -> answer (null while waiting)
   std::vector<sockaddr_in> stun_;
 

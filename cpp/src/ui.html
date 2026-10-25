@@ -167,6 +167,15 @@ pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace,
 
   <section id="settings" hidden>
     <div class="card">
+      <div class="row"><h2 class="grow" style="margin:0">软件更新</h2><button class="secondary" id="checkBtn">检查更新</button></div>
+      <div class="muted" id="updLatest" style="margin:6px 0 2px"></div>
+      <table style="margin-top:6px"><tbody>
+        <tr><td id="selfLabel">本机</td><td id="selfVer" class="muted">—</td><td style="text-align:right"><button id="updSelf" disabled>已是最新</button></td></tr>
+        <tr id="nodeRow" hidden><td>服务端</td><td id="nodeVer" class="muted">—</td><td style="text-align:right"><button id="updNode" disabled>已是最新</button></td></tr>
+      </tbody></table>
+      <div class="muted" id="updMsg" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
       <h2>设置</h2>
       <div class="row">
         <label class="switch grow"><input type="checkbox" id="autostart"> 开机自动启动（在后台运行）</label>
@@ -230,6 +239,48 @@ function render() {
   if ($("logs").textContent !== logs) $("logs").textContent = logs;
   if (s.role === "server") renderServer(s);
   if (s.role === "client") renderClient(s);
+  renderUpdate(s);
+}
+
+function parseVer(v) { const m = /^v(\d+)\.(\d+)\.(\d+)/.exec(v || ""); return m ? m.slice(1).map(Number) : null; }
+function newer(a, b) {
+  const x = parseVer(a), y = parseVer(b);
+  if (!x) return false;
+  if (!y) return true;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+let updBusy = false;
+function renderUpdate(s) {
+  const u = s.update || {};
+  const client = s.role === "client";
+  $("selfLabel").textContent = client ? "本机（客户端）" : "本机（服务端）";
+  $("selfVer").textContent = u.current || "—";
+  show("nodeRow", client);
+  $("nodeVer").textContent = u.node_version || "未连接";
+  $("checkBtn").disabled = !u.enabled || updBusy;
+  if (!u.enabled) $("updLatest").textContent = "这是开发版本，不支持自动更新。";
+  else if (u.check_error) $("updLatest").textContent = "检查更新失败：" + u.check_error;
+  else if (u.latest) {
+    $("updLatest").innerHTML = "";
+    $("updLatest").append("最新版本：", Object.assign(document.createElement("a"), { href: u.latest_url, target: "_blank", textContent: u.latest }));
+  } else $("updLatest").textContent = client ? "连接服务端后会自动检查更新（通过服务端下载，本机不会直连）。" : "启动后会自动检查更新。";
+  const selfNew = u.enabled && newer(u.latest, u.current);
+  const nodeNew = u.enabled && client && u.node_version && newer(u.latest, u.node_version);
+  for (const [id, can] of [["updSelf", selfNew], ["updNode", nodeNew]]) {
+    $(id).disabled = !can || updBusy || u.updating;
+    $(id).textContent = can ? "更新到 " + u.latest : "已是最新";
+  }
+  if (u.updating && !updBusy) $("updMsg").textContent = "正在更新，完成后会自动重启…";
+}
+async function runUpdate(path, what) {
+  if (!confirm("确定要更新" + what + "吗？更新期间会短暂断开，完成后自动重连。")) return;
+  updBusy = true; render();
+  $("updMsg").textContent = "正在下载并校验签名…";
+  let r;
+  try { r = await api(path, "POST"); } catch { r = { ok: true }; }
+  $("updMsg").textContent = r.ok ? what + "已更新，正在重启…" : "更新失败：" + r.error;
+  setTimeout(() => { updBusy = false; refresh(); }, 6000);
 }
 
 function renderServer(s) {
@@ -323,6 +374,14 @@ $("switchRole").onclick = async () => {
   if (!confirm("切换为" + next + "？当前的" + (st.role === "server" ? "服务端会停止，所有客户端会断开" : "隧道会断开") + "。")) return;
   await api("/api/role", "POST", { role: st.role === "server" ? "client" : "server" }); refresh();
 };
+$("checkBtn").onclick = async () => {
+  $("checkBtn").disabled = true;
+  const r = await api("/api/update/check", "POST");
+  $("updMsg").textContent = r.ok ? "" : "检查失败：" + r.error;
+  refresh();
+};
+$("updSelf").onclick = () => runUpdate("/api/update/self", "本机");
+$("updNode").onclick = () => runUpdate("/api/update/node", "服务端");
 $("speedBtn").onclick = async () => {
   speedBusy = true; render();
   let r = await api("/api/speedtest", "POST");

@@ -1,4 +1,7 @@
-# Push a tag like v2.0.0 to build the C++ desktop app (cpp/) and publish it.
+# Push a tag like v2.1.0 to build the C++ desktop app (cpp/), sign it and
+# publish it. Needs (Settings → Secrets and variables → Actions):
+#   secret   UPDATE_SIGNING_KEY  private key from: p2proxy-sign genkey
+#   variable UPDATE_PUBLIC_KEY   matching public key (built into the app)
 name: release-v2
 
 on:
@@ -31,8 +34,13 @@ jobs:
         shell: cmd
         env:
           P2PX_VCPKG: ${{ runner.temp }}\vcpkg
-        run: cpp\build.cmd -DP2PX_VERSION=%GITHUB_REF_NAME%
+          PUBKEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+        run: |
+          if "%PUBKEY%"=="" (echo ::error::Repository variable UPDATE_PUBLIC_KEY is not set & exit /b 1)
+          cpp\build.cmd -DP2PX_VERSION=%GITHUB_REF_NAME% -DP2PX_REPO=%GITHUB_REPOSITORY% -DP2PX_UPDATE_PUBKEY=%PUBKEY%
 
+      # The zip is for first installs; the same files are also published one
+      # by one, which is what the app's updater downloads.
       - name: Package
         shell: pwsh
         run: |
@@ -40,17 +48,29 @@ jobs:
           $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" | Select-Object -Last 1
           $name = "p2proxy-$env:GITHUB_REF_NAME-windows-x64"
           New-Item -ItemType Directory "dist\$name" | Out-Null
-          Copy-Item cpp\build\p2proxy.exe, cpp\build\msquic.dll, cpp\README.md, LICENSE "dist\$name"
-          foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
-            Copy-Item (Join-Path $crt.FullName $d) "dist\$name"
-          }
+          $runtime = @("cpp\build\p2proxy.exe", "cpp\build\msquic.dll") +
+                     ('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll' | ForEach-Object { Join-Path $crt.FullName $_ })
+          Copy-Item $runtime dist
+          Copy-Item $runtime, cpp\README.md, LICENSE "dist\$name"
           Compress-Archive "dist\$name" "dist\$name.zip"
-          $h = (Get-FileHash "dist\$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Remove-Item -Recurse "dist\$name"
           # LF and no BOM, so `sha256sum -c checksums.txt` works everywhere.
-          [IO.File]::WriteAllText("$PWD\dist\checksums.txt", "$h  $name.zip`n", [Text.UTF8Encoding]::new($false))
+          $lines = Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name
+          }
+          [IO.File]::WriteAllText("$PWD\dist\checksums.txt", ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Sign
+        shell: cmd
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          PUBKEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+        run: |
+          cpp\build\p2proxy-sign.exe -tag %GITHUB_REF_NAME% dist\checksums.txt || exit /b 1
+          cpp\build\p2proxy-sign.exe verify -tag %GITHUB_REF_NAME% dist\checksums.txt %PUBKEY%
 
       - name: Publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME dist\*.zip dist\checksums.txt --title $env:GITHUB_REF_NAME --generate-notes
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist -File).FullName --title $env:GITHUB_REF_NAME --generate-notes

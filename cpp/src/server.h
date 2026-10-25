@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -18,6 +19,8 @@ namespace p2px {
 class Server : public std::enable_shared_from_this<Server> {
 public:
   ~Server();
+  // Runs when a client asks this node to update itself; returns an error or "".
+  std::function<std::string()> onUpdateRequest;
   bool start(const std::string& key, std::string& err);
   void stop();
   json state();
@@ -27,6 +30,8 @@ private:
     std::string name, addr;
     int64_t since = 0;
     std::shared_ptr<Connection> conn;
+    std::atomic<int> speedStreams{0};    // speed-test download streams running
+    std::atomic<int64_t> speedLogged{0}; // when a speed-test start was last logged
   };
   // One client's connection attempt (one signaling offer).
   struct Session {

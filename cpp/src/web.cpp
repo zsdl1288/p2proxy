@@ -85,6 +85,21 @@ bool WebServer::start(uint16_t port, std::string& err) {
     bool ok = App::get().setAutostart(body(req).value("enabled", false));
     sendJson(res, result(ok, "could not change the startup setting"));
   });
+  s.Post("/api/update/check", [](const httplib::Request&, httplib::Response& res) {
+    std::string err;
+    bool ok = App::get().checkUpdates(err);
+    sendJson(res, result(ok, err));
+  });
+  s.Post("/api/update/self", [](const httplib::Request&, httplib::Response& res) {
+    std::string err;
+    bool ok = App::get().updateSelf(err);
+    sendJson(res, result(ok, err));
+  });
+  s.Post("/api/update/node", [](const httplib::Request&, httplib::Response& res) {
+    std::string err;
+    bool ok = App::get().updateNode(err);
+    sendJson(res, result(ok, err));
+  });
   s.Get("/api/speedtest", [](const httplib::Request&, httplib::Response& res) {
     auto c = App::get().client();
     sendJson(res, c ? c->speedState() : json{{"running", false}});

@@ -6,6 +6,7 @@
 - **输入密钥即可连接**：客户端粘贴服务端的密钥，就会自动找到并连上服务端。
 - **Clash 订阅**：客户端连上后会给出一个订阅地址，在 Clash 里添加并打开 TUN，所有流量都走服务端；隧道断开时直接断网，不会改走本地网络。
 - **测速**：测量客户端到服务端的隧道上下行速度、延迟和丢包。
+- **一键更新**：有新版本时界面里点一下即可更新本机；客户端还能远程更新服务端。每个版本都有签名，被篡改的安装包会被拒绝。
 - **速度和稳定性**：传输层是微软的 msquic，使用 BBR 拥塞控制。服务端重启后客户端约 1 秒内重连，断线 20 秒内判定。本机测试中隧道可达到约 5 Gbps。
 
 ## 下载与运行
@@ -41,9 +42,21 @@
 
 客户端界面里点"开始测速"，约 20 秒。下载速度通常受服务端的上传带宽限制：A 下载的数据都要从 B 上传过来。
 
+每次测速的结果（下载、上传、延迟、丢包）都会写进**两端**的运行日志：客户端记录自己的结果，服务端记录"某某客户端开始测速"和它报告的结果。在界面底部的"运行日志"或 `%APPDATA%\p2proxy\p2proxy.log` 里都能查到。
+
+## 软件更新
+
+界面下方的"软件更新"会显示当前版本和最新版本。p2proxy 启动后会自动检查一次，之后每 6 小时检查一次，也可以手动点"检查更新"。
+
+- **更新本机**：点"更新到 vX"，下载、校验、替换后自动重启，约断开几秒。
+- **远程更新服务端**（客户端界面里）：点服务端那一行的更新按钮，服务端会自己下载新版本并重启，不用去服务端电脑上操作。建议先更新服务端，再更新客户端。
+- **客户端不会直连**：客户端检查和下载更新时，由服务端代为从 GitHub 下载，再通过隧道传回来。客户端自己校验签名，服务端无法篡改。
+- **安全**：每个版本的校验文件都用发布者的私钥签名（Ed25519），程序内置公钥。安装包被篡改、校验文件被改、拿旧版本冒充新版本，都会被拒绝安装，原来的文件保持不变。
+- 程序要放在当前用户有写入权限的文件夹里（不要放在 `C:\Program Files`），否则无法替换文件。
+- v2.0.0 还没有更新功能，需要手动下载一次 v2.1.0 或更新的版本，之后就可以一键更新了。
+
 ## 已知限制
 
-- **还没有自动更新**：新版本需要手动下载替换（v1 的签名更新机制会在后续版本移植过来）。
 - **两边都是对称型 NAT 时无法打洞**（例如运营商级 NAT、部分手机热点），也没有中转服务器。服务端界面会提示检测到的 NAT 类型。
 - 目前只支持 IPv4 直连。
 - Clash 本身退出或崩溃时，系统路由会恢复，可能会直连上网。
@@ -67,9 +80,26 @@
 ```
 git clone https://github.com/microsoft/vcpkg.git ..\.tools\vcpkg
 ..\.tools\vcpkg\bootstrap-vcpkg.bat
-build.cmd -DP2PX_VERSION=v2.0.0
+build.cmd
 ```
 
-输出在 `build\`。依赖库（msquic、cpp-httplib、nlohmann-json、WebView2）由 vcpkg 自动编译。发布时需要把 `msquic.dll` 和 VC++ 运行库 DLL（`msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`）放在 exe 旁边。
+输出在 `build\`：`p2proxy.exe` 和发布签名工具 `p2proxy-sign.exe`。依赖库（msquic、cpp-httplib、nlohmann-json、WebView2、libsodium）由 vcpkg 自动编译。运行时需要把 `msquic.dll` 和 VC++ 运行库 DLL（`msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`）放在 exe 旁边。自己编译的是开发版，不带更新功能。
 
-推送 `v2.x.x` 标签后，GitHub Actions（`.github/workflows/release-v2.yml`）会自动编译、打包并发布。
+## 发布新版本（维护者）
+
+**一次性设置**：用 `build\p2proxy-sign.exe genkey` 生成签名密钥，在 GitHub 仓库的 Settings → Secrets and variables → Actions 里，把私钥存为 secret `UPDATE_SIGNING_KEY`，公钥存为 variable `UPDATE_PUBLIC_KEY`。私钥另外备份到密码管理器：丢了以后，已安装的程序就无法再自动更新了。（v1 用 Go 工具生成的密钥可以继续使用，`p2proxy-sign pubkey` 能算出私钥对应的公钥。）
+
+**每次发布**：
+
+```
+git tag v2.1.0
+git push origin v2.1.0
+```
+
+GitHub Actions（`.github/workflows/release-v2.yml`）会编译、打包，并发布：
+
+- `p2proxy-v2.x.x-windows-x64.zip`：给新用户下载；
+- `p2proxy.exe`、`msquic.dll` 和三个运行库 DLL：自动更新用；
+- `checksums.txt` 和签名 `checksums.txt.sig`。
+
+可以用 `p2proxy-sign verify -tag v2.x.x checksums.txt 公钥` 检查某次发布的签名。

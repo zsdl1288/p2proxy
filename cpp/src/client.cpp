@@ -1,5 +1,7 @@
 #include "client.h"
 
+#include <cmath>
+
 #include "stun.h"
 
 namespace p2px {
@@ -81,7 +83,7 @@ void Client::onSignal(const json& m) {
     std::shared_ptr<Connection> stale;
     {
       std::lock_guard lk(mu_);
-      hellos_++; // also ends a wait for an answer it can no longer send
+      helloTs_ = std::max(helloTs_, m.value("ts", (int64_t)0)); // see connectOnce
       // It restarted after our connection was made, so that connection is
       // dead; don't wait for the idle timeout to notice.
       if (conn_ && upSince_ < m.value("ts", (int64_t)0)) stale = conn_;
@@ -121,6 +123,7 @@ void Client::maintain() {
     }
     cv_.notify_all();
     logf("tunnel up: connected to exit node at %s", c->remote().c_str());
+    std::thread([self = shared_from_this()] { self->fetchNodeInfo(); }).detach();
     while (!stopping_ && !c->waitClosed(1000)) {
     }
     {
@@ -151,25 +154,23 @@ std::shared_ptr<Connection> Client::connectOnce(std::string& err) {
     answers_[sid] = nullptr;
   }
   json answer;
-  uint64_t hellos;
-  {
-    std::lock_guard lk(mu_);
-    hellos = hellos_;
-  }
+  int64_t offerTs = unixNow();
   if (!sig_->publish({{"t", "offer"}, {"s", sid}, {"c", mine}, {"tok", token}, {"name", name}}, err)) {
     std::lock_guard lk(mu_);
     answers_.erase(sid);
     return nullptr;
   }
   {
-    // An exit node that was still starting ignores offers; its "hello"
-    // means it is ready now, so stop waiting and offer again.
+    // An exit node that was still starting ignores offers. A "hello" sent
+    // after our offer means it is ready now, so stop waiting and offer again.
+    // (Older hellos, replayed when the subscription starts, do not count: that
+    // exit node was already ready and will answer.)
     std::unique_lock lk(mu_);
     cv_.wait_for(lk, std::chrono::seconds(10),
-                 [&] { return !answers_[sid].is_null() || hellos_ != hellos || stopping_; });
+                 [&] { return !answers_[sid].is_null() || helloTs_ > offerTs || stopping_; });
     answer = answers_[sid];
     answers_.erase(sid);
-    if (answer.is_null() && hellos_ != hellos) {
+    if (answer.is_null() && helloTs_ > offerTs) {
       err = "exit node just started; trying again";
       return nullptr;
     }
@@ -221,6 +222,51 @@ std::shared_ptr<Stream> Client::open(uint8_t kind, const std::string& target, in
     return nullptr;
   }
   return st;
+}
+
+void Client::fetchNodeInfo() {
+  std::string err, body;
+  auto st = open(kInfo, "", 10000, err);
+  if (!st) return;
+  char buf[4096];
+  int n;
+  while ((n = st->read((uint8_t*)buf, sizeof buf, 10000)) > 0) body.append(buf, n);
+  try {
+    std::string v = json::parse(body).value("version", "");
+    std::lock_guard lk(mu_);
+    nodeVersion_ = v;
+  } catch (...) {
+  }
+}
+
+std::string Client::nodeVersion() {
+  std::lock_guard lk(mu_);
+  return conn_ ? nodeVersion_ : "";
+}
+
+bool Client::fetch(const std::string& url, std::string& body, std::string& err) {
+  // The exit node downloads the whole file before answering.
+  auto st = open(kFetch, url, 120000, err);
+  if (!st) return false;
+  body.clear();
+  std::vector<uint8_t> buf(256 << 10);
+  for (;;) {
+    int n = st->read(buf.data(), buf.size(), 60000);
+    if (n == 0) return true;
+    if (n < 0 || body.size() > (64 << 20)) {
+      err = "download through the exit node failed";
+      st->abort();
+      return false;
+    }
+    body.append((const char*)buf.data(), n);
+  }
+}
+
+bool Client::updateNode(std::string& err) {
+  auto st = open(kUpdate, "", 300000, err);
+  if (!st) return false;
+  st->finish();
+  return true;
 }
 
 json Client::state() {
@@ -304,9 +350,13 @@ void Client::runSpeedTest() {
     speed_["phase"] = "";
     speed_["live_mbps"] = 0;
     speed_["finished"] = unixNow();
-    if (!e.empty()) speed_["error"] = e;
+    if (!e.empty()) {
+      speed_["error"] = e;
+      logf("speed test failed: %s", e.c_str());
+    }
   };
   if (!c) return finish("tunnel to exit node is down");
+  logf("speed test started");
   auto s0 = c->stats();
 
   double down = measure("tunnel_down", [&](uint64_t deadline, std::atomic<uint64_t>& bytes) {
@@ -353,14 +403,29 @@ void Client::runSpeedTest() {
   }, err);
   double up = maxNs ? gotBytes * 8 / (maxNs / 1e9) / 1e6 : 0;
   auto s1 = c->stats();
+  double rtt = s1.MinRtt / 1000.0;
+  uint64_t sent = s1.SendTotalPackets - s0.SendTotalPackets;
+  double loss = sent ? (s1.SendSuspectedLostPackets - s0.SendSuspectedLostPackets) * 100.0 / sent : 0.0;
   {
     std::lock_guard lk(speedMu_);
     speed_["tunnel_up_mbps"] = up;
-    speed_["rtt_ms"] = s1.MinRtt / 1000.0;
-    uint64_t sent = s1.SendTotalPackets - s0.SendTotalPackets;
-    speed_["loss_pct"] = sent ? (s1.SendSuspectedLostPackets - s0.SendSuspectedLostPackets) * 100.0 / sent : 0.0;
+    speed_["rtt_ms"] = rtt;
+    speed_["loss_pct"] = loss;
   }
-  finish(err.empty() ? "" : "tunnel upload: " + err);
+  if (!err.empty()) return finish("tunnel upload: " + err);
+
+  char line[160];
+  snprintf(line, sizeof line, "download %.1f Mbps, upload %.1f Mbps, latency %.0f ms, loss %.2f%%", down, up, rtt,
+           loss);
+  logf("speed test: %s", line);
+  // Tell the exit node too, so the result is in its log as well.
+  json report = {{"down", std::round(down * 10) / 10},
+                 {"up", std::round(up * 10) / 10},
+                 {"rtt", std::round(rtt)},
+                 {"loss", std::round(loss * 100) / 100}};
+  std::string e;
+  if (auto st = open(kSpeedReport, report.dump(), 10000, e)) st->finish();
+  finish("");
 }
 
 } // namespace p2px

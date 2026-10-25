@@ -3,6 +3,7 @@
 #include <thread>
 
 #include "stun.h"
+#include "update.h"
 
 namespace p2px {
 
@@ -273,11 +274,54 @@ void Server::serveStream(std::shared_ptr<Session> sess, std::weak_ptr<Client> wc
     return;
   }
   case kSpeedDown: {
+    // A test opens several streams at once; log the start once.
+    auto c = wc.lock();
+    if (c && c->speedStreams++ == 0 && unixNow() - c->speedLogged > 20) {
+      c->speedLogged = unixNow();
+      logf("%s started a speed test", c->name.c_str());
+    }
     writeStatus(*st, "");
     uint64_t end = msNow() + kSpeedTestLimitMs;
     const Bytes& f = filler();
     while (msNow() < end && st->write(f.data(), f.size())) {
     }
+    st->finish();
+    if (c) c->speedStreams--;
+    return;
+  }
+  case kFetch: {
+    // Clients update through us, so their downloads never go out directly.
+    // They verify signatures themselves; we only carry the bytes.
+    std::string body, err;
+    if (!allowedFetchUrl(target)) {
+      writeStatus(*st, "only GitHub downloads are allowed");
+    } else if (!directFetcher()(target, body, err)) {
+      writeStatus(*st, err);
+    } else if (writeStatus(*st, "")) {
+      st->write(body.data(), body.size());
+    }
+    st->finish();
+    return;
+  }
+  case kUpdate: {
+    std::string name = "a client";
+    if (auto c = wc.lock()) name = c->name;
+    logf("%s asked this exit node to update", name.c_str());
+    std::string err = onUpdateRequest ? onUpdateRequest() : "updates are not available here";
+    writeStatus(*st, err);
+    st->finish();
+    return;
+  }
+  case kSpeedReport: {
+    std::string name = "client";
+    if (auto c = wc.lock()) name = c->name;
+    try {
+      json r = json::parse(target);
+      logf("%s speed test: download %.1f Mbps, upload %.1f Mbps, latency %.0f ms, loss %.2f%%", name.c_str(),
+           r.value("down", 0.0), r.value("up", 0.0), r.value("rtt", 0.0), r.value("loss", 0.0));
+    } catch (...) {
+    }
+    writeStatus(*st, "");
     st->finish();
     return;
   }

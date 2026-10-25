@@ -9,6 +9,7 @@
 #include <WebView2.h>
 
 #include "app.h"
+#include "update.h"
 #include "web.h"
 
 using Microsoft::WRL::Callback;
@@ -18,22 +19,33 @@ using namespace p2px;
 namespace {
 
 constexpr wchar_t kClass[] = L"P2ProxyWindow";
-constexpr UINT WM_TRAY = WM_APP + 1, WM_SHOWAPP = WM_APP + 2;
+constexpr UINT WM_TRAY = WM_APP + 1, WM_SHOWAPP = WM_APP + 2, WM_RESTART = WM_APP + 3;
 constexpr UINT ID_OPEN = 1001, ID_EXIT = 1002;
+constexpr UINT_PTR TIMER_WEBVIEW = 1;
 
 HWND g_hwnd = nullptr;
 NOTIFYICONDATAW g_nid{};
 ComPtr<ICoreWebView2Controller> g_ctrl;
 ComPtr<ICoreWebView2> g_web;
-bool g_hintShown = false;
-std::wstring g_url;
+bool g_hintShown = false, g_restart = false, g_wasVisible = true;
+int g_webviewTries = 0;
+std::wstring g_url, g_keepArgs; // arguments a restart passes on
+
+// Right after an update the previous copy's WebView2 may still be closing,
+// so retry a few times before falling back to the browser.
+void webviewFailed(HRESULT hr) {
+  if (++g_webviewTries < 6) {
+    SetTimer(g_hwnd, TIMER_WEBVIEW, 1000, nullptr);
+    return;
+  }
+  logf("WebView2 is unavailable (0x%08lx); opening the browser instead", hr);
+  ShellExecuteW(nullptr, L"open", g_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 
 void showWindow() {
   ShowWindow(g_hwnd, IsIconic(g_hwnd) ? SW_RESTORE : SW_SHOW);
   SetForegroundWindow(g_hwnd);
 }
-
-void openInBrowser() { ShellExecuteW(nullptr, L"open", g_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 
 void initWebView() {
   std::wstring data = appDataDir() + L"\\webview";
@@ -42,15 +54,14 @@ void initWebView() {
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
             if (FAILED(result) || !env) {
-              logf("WebView2 is unavailable (0x%08lx); opening the browser instead", result);
-              openInBrowser();
+              webviewFailed(result);
               return S_OK;
             }
             env->CreateCoreWebView2Controller(
                 g_hwnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                             [](HRESULT result, ICoreWebView2Controller* ctrl) -> HRESULT {
                               if (FAILED(result) || !ctrl) {
-                                openInBrowser();
+                                webviewFailed(result);
                                 return S_OK;
                               }
                               g_ctrl = ctrl;
@@ -84,9 +95,22 @@ void initWebView() {
             return S_OK;
           })
           .Get());
-  if (FAILED(hr)) {
-    logf("WebView2 is unavailable (0x%08lx); opening the browser instead", hr);
-    openInBrowser();
+  if (FAILED(hr)) webviewFailed(hr);
+}
+
+// Starts the freshly installed copy with the same settings; it waits for this
+// process to exit before taking over.
+void startNewCopy() {
+  std::wstring cmd = L"\"" + exePath() + L"\"" + g_keepArgs + (g_wasVisible ? L"" : L" --minimized") +
+                     L" --wait-pid " + std::to_wstring(GetCurrentProcessId());
+  STARTUPINFOW si{sizeof si};
+  PROCESS_INFORMATION pi{};
+  if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    logf("restarting into the new version");
+  } else {
+    logf("could not start the new version (error %lu); start p2proxy again", GetLastError());
   }
 }
 
@@ -132,6 +156,17 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_SHOWAPP:
     showWindow();
     return 0;
+  case WM_RESTART:
+    g_restart = true;
+    g_wasVisible = IsWindowVisible(h);
+    DestroyWindow(h);
+    return 0;
+  case WM_TIMER:
+    if (wp == TIMER_WEBVIEW) {
+      KillTimer(h, TIMER_WEBVIEW);
+      initWebView();
+    }
+    return 0;
   case WM_DESTROY:
     PostQuitMessage(0);
     return 0;
@@ -145,16 +180,39 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   App& app = App::get();
   bool minimized = false;
+  DWORD waitPid = 0;
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   for (int i = 1; i < argc; i++) {
     std::wstring a = argv[i];
-    if (a == L"--minimized") minimized = true;
-    else if (a == L"--profile" && i + 1 < argc) setProfile(argv[++i]);
-    else if (a == L"--ui-port" && i + 1 < argc) app.uiPort = (uint16_t)_wtoi(argv[++i]);
-    else if (a == L"--socks-port" && i + 1 < argc) app.socksPort = (uint16_t)_wtoi(argv[++i]);
+    bool keep = true;
+    if (a == L"--minimized") {
+      minimized = true;
+      keep = false;
+    } else if (a == L"--wait-pid" && i + 1 < argc) {
+      waitPid = (DWORD)_wtoi(argv[++i]);
+      keep = false;
+    } else if (a == L"--profile" && i + 1 < argc) {
+      setProfile(argv[i + 1]);
+    } else if (a == L"--ui-port" && i + 1 < argc) {
+      app.uiPort = (uint16_t)_wtoi(argv[i + 1]);
+    } else if (a == L"--socks-port" && i + 1 < argc) {
+      app.socksPort = (uint16_t)_wtoi(argv[i + 1]);
+    }
+    if (keep && i + 1 < argc && (a == L"--profile" || a == L"--ui-port" || a == L"--socks-port")) {
+      g_keepArgs += L" " + a + L" \"" + argv[i + 1] + L"\"";
+      i++;
+    }
   }
   LocalFree(argv);
+  // After an update: let the previous copy exit and release its ports first.
+  if (waitPid) {
+    if (HANDLE p = OpenProcess(SYNCHRONIZE, FALSE, waitPid)) {
+      WaitForSingleObject(p, 20000);
+      CloseHandle(p);
+    }
+  }
+  cleanupOldFiles();
 
   // One copy per user (and profile): a second launch brings the first forward.
   std::wstring title = profile().empty() ? L"p2proxy" : L"p2proxy - " + profile();
@@ -179,7 +237,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     return 1;
   }
   g_url = L"http://127.0.0.1:" + std::to_wstring(app.uiPort) + L"/";
+  app.setRestartHook([] { PostMessageW(g_hwnd, WM_RESTART, 0, 0); });
   app.startRole();
+  app.startUpdateChecks();
 
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   WNDCLASSEXW wc{sizeof wc};
@@ -188,6 +248,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
   if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+  // The small size, drawn for 16-24 px, keeps the title bar and tray crisp.
+  wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                 GetSystemMetrics(SM_CYSMICON), 0);
   wc.hbrBackground = CreateSolidBrush(RGB(17, 19, 24));
   wc.lpszClassName = kClass;
   RegisterClassExW(&wc);
@@ -200,7 +263,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   g_nid.uID = 1;
   g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g_nid.uCallbackMessage = WM_TRAY;
-  g_nid.hIcon = wc.hIcon;
+  g_nid.hIcon = wc.hIconSm ? wc.hIconSm : wc.hIcon;
   wcsncpy_s(g_nid.szTip, title.c_str(), _TRUNCATE);
   Shell_NotifyIconW(NIM_ADD, &g_nid);
 
@@ -221,5 +284,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   Quic::cleanup();
   logf("p2proxy stopped");
   ReleaseMutex(mutex);
+  CloseHandle(mutex);
+  if (g_restart) startNewCopy();
   return 0;
 }

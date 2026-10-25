@@ -101,7 +101,7 @@ HttpResult httpRequest(const std::string& method, const std::string& url, const 
   DWORD n = 0;
   while (WinHttpReadData(req, buf, sizeof buf, &n) && n > 0) {
     r.body.append(buf, n);
-    if (r.body.size() > (8 << 20)) break;
+    if (r.body.size() > (64 << 20)) break;
   }
   return r;
 }
