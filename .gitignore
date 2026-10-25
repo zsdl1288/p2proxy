@@ -1,0 +1,6 @@
+# Never commit the shared key.
+key.txt
+*.exe
+*.exe.old
+*.exe.new
+/dist/

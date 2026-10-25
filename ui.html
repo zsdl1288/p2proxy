@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>p2proxy 控制面板</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --text: #1d2129; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #2563eb; --accent-text: #ffffff; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+  --tile: #f3f4f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318; --card: #1a1d24; --text: #e6e8ec; --muted: #9aa3af; --line: #2a2f39;
+    --accent: #3b82f6; --accent-text: #ffffff; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444;
+    --tile: #222631;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+.pill { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
+.card h2 { font-size: 15px; margin: 0 0 12px; }
+.state { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+.dot.wait { background: var(--warn); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; margin-top: 14px; }
+.facts div span { display: block; color: var(--muted); font-size: 12px; }
+.facts div b { font-weight: 600; font-variant-numeric: tabular-nums; word-break: break-all; }
+.err { color: var(--bad); margin-top: 10px; font-size: 13px; word-break: break-word; }
+.muted { color: var(--muted); font-size: 13px; }
+button { font: inherit; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); font-weight: 600; }
+button.secondary { background: var(--tile); color: var(--text); border: 1px solid var(--line); }
+button:disabled { opacity: .45; cursor: default; }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 14px; }
+.tile { background: var(--tile); border-radius: 10px; padding: 12px; }
+.tile span { display: block; color: var(--muted); font-size: 12px; }
+.tile b { font-size: 24px; font-variant-numeric: tabular-nums; }
+.tile small { color: var(--muted); margin-left: 4px; }
+.tile.active { outline: 2px solid var(--accent); }
+.hint { margin-top: 12px; font-size: 13px; }
+.ver { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.ver:first-of-type { border-top: 0; }
+.ver b { display: block; }
+a { color: var(--accent); }
+@media (max-width: 480px) { .tiles { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>p2proxy</h1><span class="pill" id="version">…</span></header>
+
+  <section class="card">
+    <div class="state"><span class="dot" id="dot"></span><span id="state">正在读取状态…</span></div>
+    <div class="facts">
+      <div><span>出口节点 (B)</span><b id="remote">—</b></div>
+      <div><span>延迟</span><b id="rtt">—</b></div>
+      <div><span>已连接</span><b id="uptime">—</b></div>
+      <div><span>并行连接</span><b id="conns">—</b></div>
+      <div><span>已发送 / 已接收</span><b id="traffic">—</b></div>
+    </div>
+    <div class="err" id="error" hidden></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0;flex:1">测速</h2><button id="speedBtn">开始测速</button></div>
+    <div class="muted" id="speedState" style="margin-top:8px">约 25 秒。测速会占满带宽，期间网页可能变慢。</div>
+    <div class="tiles">
+      <div class="tile" data-phase="tunnel_down"><span>隧道下载 (B→A)</span><b id="tunnel_down">—</b><small>Mbps</small></div>
+      <div class="tile" data-phase="tunnel_up"><span>隧道上传 (A→B)</span><b id="tunnel_up">—</b><small>Mbps</small></div>
+      <div class="tile" data-phase="net_down"><span>经 B 上网 · 下载</span><b id="net_down">—</b><small id="net_unit">Mbps</small></div>
+      <div class="tile"><span>延迟 · 上行丢包</span><b id="latency">—</b><small id="loss"></small></div>
+    </div>
+    <div class="hint muted" id="speedHint"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0;flex:1">软件更新</h2><button class="secondary" id="checkBtn">检查更新</button></div>
+    <div class="muted" id="latest" style="margin:6px 0 4px"></div>
+    <div class="ver">
+      <div><b>本机 (A)</b><span class="muted" id="verA">—</span></div>
+      <button id="updA" disabled>已是最新</button>
+    </div>
+    <div class="ver">
+      <div><b>出口节点 (B)</b><span class="muted" id="verB">—</span></div>
+      <button id="updB" disabled>已是最新</button>
+    </div>
+    <div class="hint" id="updMsg"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const phases = { tunnel_down: "隧道下载", tunnel_up: "隧道上传", net_down: "经 B 上网下载" };
+let status = null, busy = false;
+
+async function api(path, method = "GET") {
+  const r = await fetch(path, { method, headers: method === "GET" ? {} : { "X-P2PX": "1" } });
+  return r.json();
+}
+function mbps(v) { return v >= 100 ? v.toFixed(0) : v.toFixed(1); }
+function bytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+function duration(s) {
+  if (s < 60) return s + " 秒";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时 " + Math.floor(s % 3600 / 60) + " 分";
+  return Math.floor(s / 86400) + " 天 " + Math.floor(s % 86400 / 3600) + " 小时";
+}
+function parse(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v || "");
+  return m ? m.slice(1).map(Number) : null;
+}
+function newer(a, b) {
+  const x = parse(a), y = parse(b);
+  if (!x) return false;
+  if (!y) return true;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
+async function refresh() {
+  try { status = await api("/api/status"); } catch { status = null; }
+  render();
+}
+
+function render() {
+  const s = status;
+  if (!s) {
+    $("dot").className = "dot wait";
+    $("state").textContent = "控制面板暂时无法连接（p2proxy 可能正在重启）";
+    return;
+  }
+  $("version").textContent = s.version;
+  $("dot").className = "dot " + (s.connected ? "ok" : "wait");
+  $("state").textContent = s.connected ? "已连接，正在通过 B 上网" : "正在连接出口节点…（此时无法上网，不会直连）";
+  $("remote").textContent = s.remote || "—";
+  $("rtt").textContent = s.connected ? s.rtt_ms.toFixed(0) + " ms" : "—";
+  $("uptime").textContent = s.connected ? duration(Math.floor(Date.now() / 1000) - s.up_since) : "—";
+  $("conns").textContent = s.connected ? s.conns : "—";
+  $("traffic").textContent = s.connected ? bytes(s.sent) + " / " + bytes(s.received) : "—";
+  $("error").hidden = s.connected || !s.error;
+  $("error").textContent = s.error ? "上次错误：" + s.error : "";
+  $("speedBtn").disabled = !s.connected || busy;
+
+  const tag = s.latest && s.latest.tag;
+  if (!s.updates) {
+    $("latest").textContent = "这是开发版本，不支持自动更新。";
+    $("checkBtn").disabled = true;
+  } else if (s.check_error) {
+    $("latest").textContent = "检查更新失败：" + s.check_error;
+  } else if (tag) {
+    $("latest").innerHTML = "";
+    $("latest").append("最新版本：", Object.assign(document.createElement("a"), { href: s.latest.url, target: "_blank", textContent: tag }));
+  } else {
+    $("latest").textContent = s.connected ? "尚未检查" : "隧道连通后自动检查更新";
+  }
+  $("verA").textContent = " " + s.version;
+  $("verB").textContent = s.node ? " " + s.node.version + "（" + s.node.os + "/" + s.node.arch + "）" : " 未连接";
+  setUpdateButton($("updA"), s.updates && s.connected && newer(tag, s.version), tag);
+  setUpdateButton($("updB"), s.updates && s.connected && s.node && newer(tag, s.node.version), tag);
+}
+
+function setUpdateButton(btn, available, tag) {
+  if (busy) { btn.disabled = true; return; }
+  btn.disabled = !available;
+  btn.textContent = available ? "更新到 " + tag : "已是最新";
+}
+
+function renderSpeed(r) {
+  for (const k of Object.keys(phases)) {
+    const v = r[k + "_mbps"];
+    $(k).textContent = r.phase === k ? mbps(r.live_mbps) : (v ? mbps(v) : "—");
+    document.querySelector(`[data-phase="${k}"]`).classList.toggle("active", r.running && r.phase === k);
+  }
+  if (r.net_skipped) $("net_down").textContent = "未测";
+  $("net_unit").hidden = !!r.net_skipped;
+  $("latency").textContent = r.finished ? r.rtt_ms.toFixed(0) + " ms" : "—";
+  $("loss").textContent = r.finished ? r.loss_pct.toFixed(2) + "%" : "";
+  if (r.running) {
+    $("speedState").textContent = "正在测试：" + (phases[r.phase] || "准备中") + "…";
+  } else if (r.error) {
+    $("speedState").textContent = "测速失败：" + r.error;
+  } else if (r.finished) {
+    $("speedState").textContent = "完成于 " + new Date(r.finished * 1000).toLocaleTimeString();
+  }
+  let hint = "";
+  if (!r.running && r.finished && !r.error) {
+    if (r.net_skipped) hint = "只测了隧道。想测经 B 上网的速度，启动客户端时用 -speed-url 指定一个大文件地址。";
+    else hint = r.net_down < r.tunnel_down * 0.8
+      ? "瓶颈在 B 的宽带下载，或 B 到外网的线路。"
+      : "瓶颈在 A↔B 之间：通常是 B 的上传带宽或 A 的下载带宽。";
+    if (r.loss_pct > 1) hint += " 丢包较高，可以试试用 -conns 4 启动客户端。";
+  }
+  $("speedHint").textContent = hint;
+}
+
+$("speedBtn").onclick = async () => {
+  busy = true; render();
+  let r = await api("/api/speedtest", "POST");
+  while (r.running) {
+    renderSpeed(r);
+    await new Promise(ok => setTimeout(ok, 500));
+    r = await api("/api/speedtest");
+  }
+  renderSpeed(r);
+  busy = false; refresh();
+};
+
+$("checkBtn").onclick = async () => {
+  $("checkBtn").disabled = true;
+  const r = await api("/api/check", "POST");
+  $("updMsg").textContent = r.error ? "检查失败：" + r.error : "";
+  $("checkBtn").disabled = false;
+  refresh();
+};
+
+async function update(target, label) {
+  if (!confirm("确定要更新" + label + "吗？更新期间会短暂断网，完成后自动重连。")) return;
+  busy = true; render();
+  $("updMsg").textContent = "正在下载并校验签名…";
+  let r;
+  try { r = await api("/api/update?target=" + target, "POST"); }
+  catch { r = { ok: true }; }
+  $("updMsg").textContent = r.error ? "更新失败：" + r.error : label + "已更新，正在重启…";
+  setTimeout(() => { busy = false; refresh(); }, 8000);
+}
+$("updA").onclick = () => update("client", "本机");
+$("updB").onclick = () => update("node", "出口节点 B");
+
+api("/api/speedtest").then(renderSpeed).catch(() => {});
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

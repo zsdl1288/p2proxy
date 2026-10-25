@@ -1,0 +1,46 @@
+# A 电脑用的 mihomo (Clash Meta) 配置
+# 效果：A 的全部流量经 TUN 交给 p2proxy，从 B 出去；隧道断开时直接断网，不会回落直连。
+# 前提：A 上 p2proxy client 在 127.0.0.1:1080 运行。
+
+mode: rule            # 不要切换到 "direct"（直连）模式
+log-level: info
+allow-lan: false
+ipv6: true            # 让 TUN 也接管 IPv6，避免 IPv6 流量绕过隧道
+find-process-mode: always
+
+tun:
+  enable: true
+  stack: mixed
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: true  # Windows 上会阻止系统 DNS 绕过 TUN 直接发给运营商
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+
+dns:
+  enable: true
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  # 程序拿到的是假 IP，真正的域名交给 B 去解析，A 本地不发出任何 DNS 查询。
+  # 极少数需要真实 IP 的情况，也通过隧道到 B 那边去查：
+  nameserver:
+    - https://1.1.1.1/dns-query#P2P
+  # 只给 DIRECT 出站用，也就是只有 p2proxy.exe 自己（见下方规则）
+  direct-nameserver:
+    - tls://1.1.1.1
+
+proxies:
+  - name: P2P
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+
+rules:
+  # p2proxy 自己连接 B 的流量必须直连，否则会绕回自身。
+  # （p2proxy 默认已绑定物理网卡绕开 TUN，这条是双保险。）
+  - PROCESS-NAME,p2proxy.exe,DIRECT
+  # 其余一切都走 B。没有任何回落到 DIRECT 的规则。
+  - MATCH,P2P
