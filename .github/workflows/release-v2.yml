@@ -1,0 +1,55 @@
+# Push a tag like v2.0.0 to build the C++ desktop app (cpp/) and publish it.
+name: release-v2
+
+on:
+  push:
+    tags: ["v2.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Full clone: vcpkg needs history to resolve the manifest's baseline.
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Cache vcpkg builds
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-${{ hashFiles('cpp/vcpkg.json') }}
+
+      - name: Build
+        shell: cmd
+        env:
+          P2PX_VCPKG: ${{ runner.temp }}\vcpkg
+        run: cpp\build.cmd -DP2PX_VERSION=%GITHUB_REF_NAME%
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" | Select-Object -Last 1
+          $name = "p2proxy-$env:GITHUB_REF_NAME-windows-x64"
+          New-Item -ItemType Directory "dist\$name" | Out-Null
+          Copy-Item cpp\build\p2proxy.exe, cpp\build\msquic.dll, cpp\README.md, LICENSE "dist\$name"
+          foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item (Join-Path $crt.FullName $d) "dist\$name"
+          }
+          Compress-Archive "dist\$name" "dist\$name.zip"
+          $h = (Get-FileHash "dist\$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content dist\checksums.txt "$h  $name.zip"
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist\*.zip dist\checksums.txt --title $env:GITHUB_REF_NAME --generate-notes

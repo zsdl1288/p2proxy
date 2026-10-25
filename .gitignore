@@ -4,3 +4,5 @@ key.txt
 *.exe.old
 *.exe.new
 /dist/
+# C++ build output (cpp/build.cmd)
+cpp/build/

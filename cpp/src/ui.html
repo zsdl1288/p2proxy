@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>p2proxy</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --text: #1d2129; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #2563eb; --accent-text: #fff; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --tile: #f3f4f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318; --card: #1a1d24; --text: #e6e8ec; --muted: #9aa3af; --line: #2a2f39;
+    --accent: #3b82f6; --accent-text: #fff; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444; --tile: #222631;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+main { max-width: 820px; margin: 0 auto; padding: 22px 16px 40px; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.pill { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
+.card.focus { border-color: var(--accent); }
+.state { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 22%, transparent); }
+.dot.wait { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px 16px; margin-top: 14px; }
+.facts span { display: block; color: var(--muted); font-size: 12px; }
+.facts b { font-weight: 600; font-variant-numeric: tabular-nums; word-break: break-all; }
+.muted { color: var(--muted); font-size: 13px; }
+.err { color: var(--bad); font-size: 13px; margin-top: 10px; word-break: break-word; }
+.warn { color: var(--warn); font-size: 13px; margin-top: 10px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.grow { flex: 1; }
+button { font: inherit; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); font-weight: 600; }
+button.secondary { background: var(--tile); color: var(--text); border: 1px solid var(--line); }
+button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+button:disabled { opacity: .45; cursor: default; }
+input[type=text], input[type=password] { flex: 1; min-width: 220px; font: inherit; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--tile); color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+.choose { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.choice { text-align: left; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+  padding: 20px; font-weight: 400; }
+.choice:hover { border-color: var(--accent); }
+.choice b { display: block; font-size: 17px; margin-bottom: 6px; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+.tile { background: var(--tile); border-radius: 10px; padding: 12px; }
+.tile span { display: block; color: var(--muted); font-size: 12px; }
+.tile b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.tile small { color: var(--muted); margin-left: 3px; }
+.tile.active { outline: 2px solid var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 6px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: 500; border-top: 0; }
+ol { margin: 10px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
+details summary { cursor: pointer; color: var(--muted); }
+pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted);
+  max-height: 260px; overflow: auto; margin: 10px 0 0; }
+.switch { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+@media (max-width: 560px) { .choose, .tiles { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>p2proxy</h1><span class="pill" id="version">…</span><span class="pill" id="roleBadge" hidden></span>
+  </header>
+
+  <!-- First run: pick a role -->
+  <section id="chooseView" hidden>
+    <div class="card">
+      <h2>这台电脑是哪一端？</h2>
+      <p class="muted" style="margin:0 0 14px">两台电脑用同一个程序。出口电脑当"服务端"，其他电脑当"客户端"，通过服务端的网络上网。同一个密钥只能有一个服务端，客户端可以有多个。</p>
+      <div class="choose">
+        <button class="choice" data-role="server"><b>服务端（出口）</b>把这台电脑的网络分享给客户端。会生成一个密钥，发给客户端使用。</button>
+        <button class="choice" data-role="client"><b>客户端</b>输入服务端的密钥，通过服务端的网络上网，并获得 Clash 订阅地址。</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Exit node -->
+  <section id="serverView" hidden>
+    <div class="card">
+      <div class="state"><span class="dot" id="sDot"></span><span id="sState">…</span></div>
+      <div class="facts">
+        <div><span>公网地址</span><b id="sAddr">—</b></div>
+        <div><span>已运行</span><b id="sUp">—</b></div>
+        <div><span>已连接的客户端</span><b id="sCount">0</b></div>
+      </div>
+      <div class="warn" id="sNat" hidden>检测到对称型 NAT：打洞可能失败。可以在路由器上为这台电脑开启 UPnP 或设置 DMZ。</div>
+      <div class="err" id="sErr" hidden></div>
+    </div>
+    <div class="card">
+      <h2>密钥</h2>
+      <p class="muted" style="margin:0 0 10px">在客户端输入这个密钥即可连接。密钥就是访问这台电脑网络的钥匙，请只发给信任的人。</p>
+      <div class="row">
+        <input type="password" id="sKey" readonly>
+        <button class="secondary" id="sShow">显示</button>
+        <button id="sCopy">复制</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <span class="muted grow">换密钥后，所有客户端都需要输入新密钥。</span>
+        <button class="danger" id="sRegen">重新生成密钥</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>已连接的客户端</h2>
+      <table><thead><tr><th>名称</th><th>地址</th><th>已连接</th><th>延迟</th><th>流量（发 / 收）</th></tr></thead>
+        <tbody id="sClients"><tr><td colspan="5" class="muted">还没有客户端连接</td></tr></tbody></table>
+    </div>
+  </section>
+
+  <!-- Client -->
+  <section id="clientView" hidden>
+    <div class="card focus" id="keyCard" hidden>
+      <h2 id="keyTitle">输入服务端的密钥</h2>
+      <p class="muted" style="margin:0 0 12px">在服务端电脑的 p2proxy 界面里点"复制"，粘贴到这里。</p>
+      <div class="row">
+        <input type="password" id="cKey" placeholder="粘贴密钥" autocomplete="off" spellcheck="false">
+        <button id="cSave">保存并连接</button>
+      </div>
+      <div class="err" id="keyMsg" hidden></div>
+    </div>
+    <div id="clientMain" hidden>
+      <div class="card">
+        <div class="state"><span class="dot" id="cDot"></span><span id="cState">…</span></div>
+        <div class="facts">
+          <div><span>服务端地址</span><b id="cRemote">—</b></div>
+          <div><span>延迟</span><b id="cRtt">—</b></div>
+          <div><span>已连接</span><b id="cUp">—</b></div>
+          <div><span>流量（发 / 收）</span><b id="cTraffic">—</b></div>
+        </div>
+        <div class="err" id="cErr" hidden></div>
+      </div>
+      <div class="card">
+        <h2>Clash 订阅地址</h2>
+        <div class="row">
+          <input type="text" id="cSub" readonly>
+          <button id="cCopySub">复制</button>
+        </div>
+        <ol>
+          <li>打开 Clash Verge Rev（或其他 mihomo 内核的 Clash），在"订阅"里新建，粘贴上面的地址。</li>
+          <li>选中这个订阅，在设置里打开"虚拟网卡模式（TUN）"和"严格路由"，关闭"DNS 覆写"。</li>
+          <li>所有流量都会经过服务端；隧道断开时会直接断网，不会改走本地网络。</li>
+        </ol>
+      </div>
+      <div class="card">
+        <div class="row"><h2 class="grow" style="margin:0">测速</h2><button id="speedBtn">开始测速</button></div>
+        <div class="muted" id="speedState" style="margin-top:8px">测试这台电脑与服务端之间的隧道速度，约 20 秒，会占满带宽。</div>
+        <div class="tiles">
+          <div class="tile" data-phase="tunnel_down"><span>下载（服务端→本机）</span><b id="tDown">—</b><small>Mbps</small></div>
+          <div class="tile" data-phase="tunnel_up"><span>上传（本机→服务端）</span><b id="tUp">—</b><small>Mbps</small></div>
+          <div class="tile"><span>延迟</span><b id="tRtt">—</b><small>ms</small></div>
+          <div class="tile"><span>丢包</span><b id="tLoss">—</b><small>%</small></div>
+        </div>
+        <div class="muted" id="speedHint" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings" hidden>
+    <div class="card">
+      <h2>设置</h2>
+      <div class="row">
+        <label class="switch grow"><input type="checkbox" id="autostart"> 开机自动启动（在后台运行）</label>
+        <button class="secondary" id="changeKey" hidden>更换密钥</button>
+        <button class="secondary" id="switchRole">切换角色</button>
+      </div>
+      <p class="muted" style="margin:10px 0 0">关闭窗口不会停止 p2proxy，它会留在任务栏右下角的托盘里；要完全退出，请右键托盘图标。</p>
+    </div>
+    <div class="card">
+      <details><summary>运行日志</summary><pre id="logs"></pre></details>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let st = null, keyOpen = false, speedBusy = false;
+
+async function api(path, method = "GET", body) {
+  const opt = { method, headers: {} };
+  if (method !== "GET") opt.headers["X-P2PX"] = "1";
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  return (await fetch(path, opt)).json();
+}
+function bytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+function since(t) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - t);
+  if (s < 60) return s + " 秒";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时 " + Math.floor(s % 3600 / 60) + " 分";
+  return Math.floor(s / 86400) + " 天 " + Math.floor(s % 86400 / 3600) + " 小时";
+}
+const mbps = v => v >= 100 ? v.toFixed(0) : v.toFixed(1);
+function show(id, on) { $(id).hidden = !on; }
+async function copy(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement("textarea"); t.value = text; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+  const old = btn.textContent; btn.textContent = "已复制"; setTimeout(() => btn.textContent = old, 1500);
+}
+
+async function refresh() {
+  try { st = await api("/api/state"); } catch { return; }
+  render();
+}
+
+function render() {
+  const s = st;
+  $("version").textContent = s.version;
+  show("chooseView", !s.role);
+  show("serverView", s.role === "server");
+  show("clientView", s.role === "client");
+  show("settings", !!s.role);
+  $("roleBadge").hidden = !s.role;
+  $("roleBadge").textContent = s.role === "server" ? "服务端" : "客户端";
+  $("autostart").checked = !!s.autostart;
+  show("changeKey", s.role === "client" && s.client_key_set && !keyOpen);
+  const logs = (s.logs || []).join("\n");
+  if ($("logs").textContent !== logs) $("logs").textContent = logs;
+  if (s.role === "server") renderServer(s);
+  if (s.role === "client") renderClient(s);
+}
+
+function renderServer(s) {
+  const v = s.server || {};
+  const status = s.role_error ? "error" : v.status;
+  $("sDot").className = "dot " + ({ running: "ok", starting: "wait" }[status] || "bad");
+  $("sState").textContent = { running: "服务端运行中", starting: "正在启动…", conflict: "已有其他服务端", error: "服务端无法启动" }[status] || "…";
+  const err = s.role_error || (status === "conflict" ? "这个密钥已经有一台电脑在当服务端了。同一个密钥只能有一个服务端：请关闭另一台，或在这里重新生成密钥。" : v.error);
+  show("sErr", !!err); $("sErr").textContent = err || "";
+  const pub = (v.candidates || []).filter(c => !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(c));
+  $("sAddr").textContent = pub.length ? pub.map(c => c.replace(/:\d+$/, "")).join(", ") : "—";
+  $("sUp").textContent = v.started ? since(v.started) : "—";
+  const cs = v.clients || [];
+  $("sCount").textContent = cs.length;
+  show("sNat", !!v.symmetric_nat);
+  if ($("sKey").value !== (s.server_key || "")) $("sKey").value = s.server_key || "";
+  $("sClients").innerHTML = cs.length ? "" : '<tr><td colspan="5" class="muted">还没有客户端连接</td></tr>';
+  for (const c of cs) {
+    const tr = document.createElement("tr");
+    for (const t of [c.name, c.addr, since(c.since), c.rtt_ms.toFixed(0) + " ms", bytes(c.sent) + " / " + bytes(c.received)]) {
+      const td = document.createElement("td"); td.textContent = t; tr.append(td);
+    }
+    $("sClients").append(tr);
+  }
+}
+
+function renderClient(s) {
+  const needKey = !s.client_key_set;
+  show("keyCard", needKey || keyOpen);
+  $("keyTitle").textContent = needKey ? "输入服务端的密钥" : "更换密钥";
+  show("clientMain", !needKey);
+  if (needKey) return;
+  const c = s.client || {};
+  $("cDot").className = "dot " + (c.connected ? "ok" : s.role_error ? "bad" : "wait");
+  $("cState").textContent = s.role_error ? "客户端无法启动" : c.connected ? "已连接，正在通过服务端上网" : "正在连接服务端…（此时无法上网，不会直连）";
+  $("cRemote").textContent = c.remote || "—";
+  $("cRtt").textContent = c.connected ? c.rtt_ms.toFixed(0) + " ms" : "—";
+  $("cUp").textContent = c.connected ? since(c.since) : "—";
+  $("cTraffic").textContent = c.connected ? bytes(c.sent) + " / " + bytes(c.received) : "—";
+  const err = s.role_error || (!c.connected && c.error ? "上次错误：" + c.error : "");
+  show("cErr", !!err); $("cErr").textContent = err;
+  if ($("cSub").value !== s.subscription_url) $("cSub").value = s.subscription_url;
+  $("speedBtn").disabled = !c.connected || speedBusy;
+}
+
+function renderSpeed(r) {
+  const tiles = { tunnel_down: "tDown", tunnel_up: "tUp" };
+  for (const [k, id] of Object.entries(tiles)) {
+    const v = r[k + "_mbps"];
+    $(id).textContent = r.phase === k ? mbps(r.live_mbps || 0) : (v !== undefined ? mbps(v) : "—");
+    document.querySelector(`[data-phase="${k}"]`).classList.toggle("active", r.running && r.phase === k);
+  }
+  $("tRtt").textContent = r.rtt_ms !== undefined ? r.rtt_ms.toFixed(0) : "—";
+  $("tLoss").textContent = r.loss_pct !== undefined ? r.loss_pct.toFixed(2) : "—";
+  if (r.running) $("speedState").textContent = "正在测试：" + ({ tunnel_down: "下载", tunnel_up: "上传" }[r.phase] || "准备中") + "…";
+  else if (r.error) $("speedState").textContent = "测速失败：" + r.error;
+  else if (r.finished) $("speedState").textContent = "完成于 " + new Date(r.finished * 1000).toLocaleTimeString();
+  let hint = "";
+  if (!r.running && r.finished && !r.error) {
+    hint = "下载速度通常受服务端的上传带宽限制。";
+    if (r.loss_pct > 2) hint += " 丢包较高，网络可能不稳定。";
+  }
+  $("speedHint").textContent = hint;
+}
+
+document.querySelectorAll(".choice").forEach(b => b.onclick = async () => {
+  b.disabled = true; await api("/api/role", "POST", { role: b.dataset.role }); b.disabled = false; refresh();
+});
+$("sShow").onclick = () => { const k = $("sKey"); const hide = k.type === "text"; k.type = hide ? "password" : "text"; $("sShow").textContent = hide ? "显示" : "隐藏"; };
+$("sCopy").onclick = () => copy($("sKey").value, $("sCopy"));
+$("sRegen").onclick = async () => {
+  if (!confirm("重新生成密钥后，所有客户端都会断开，需要输入新密钥才能连接。确定吗？")) return;
+  await api("/api/server/regenerate", "POST"); refresh();
+};
+$("cSave").onclick = async () => {
+  const key = $("cKey").value.trim();
+  if (!key) return;
+  $("cSave").disabled = true;
+  const r = await api("/api/client/key", "POST", { key });
+  $("cSave").disabled = false;
+  show("keyMsg", !!r.error); $("keyMsg").textContent = r.error ? "保存失败：" + r.error : "";
+  if (r.ok) { $("cKey").value = ""; keyOpen = false; }
+  refresh();
+};
+$("cKey").addEventListener("keydown", e => { if (e.key === "Enter") $("cSave").click(); });
+$("changeKey").onclick = () => { keyOpen = true; render(); $("cKey").focus(); };
+$("cCopySub").onclick = () => copy($("cSub").value, $("cCopySub"));
+$("autostart").onchange = async e => { await api("/api/autostart", "POST", { enabled: e.target.checked }); refresh(); };
+$("switchRole").onclick = async () => {
+  const next = st.role === "server" ? "客户端" : "服务端";
+  if (!confirm("切换为" + next + "？当前的" + (st.role === "server" ? "服务端会停止，所有客户端会断开" : "隧道会断开") + "。")) return;
+  await api("/api/role", "POST", { role: st.role === "server" ? "client" : "server" }); refresh();
+};
+$("speedBtn").onclick = async () => {
+  speedBusy = true; render();
+  let r = await api("/api/speedtest", "POST");
+  while (r.running) { renderSpeed(r); await new Promise(ok => setTimeout(ok, 500)); r = await api("/api/speedtest"); }
+  renderSpeed(r); speedBusy = false; refresh();
+};
+
+api("/api/speedtest").then(r => { if (r.finished || r.running) renderSpeed(r); }).catch(() => {});
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

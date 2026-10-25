@@ -1,4 +1,5 @@
-# Push a tag like v1.2.0 to build, sign and publish a release.
+# Push a tag like v1.2.0 to build, sign and publish a release of the Go
+# version (v1). The C++ desktop app (v2) has its own workflow, release-v2.yml.
 # Needs (Settings → Secrets and variables → Actions):
 #   secret   UPDATE_SIGNING_KEY  private key from: go run ./tools/sign genkey
 #   variable UPDATE_PUBLIC_KEY   matching public key
@@ -6,7 +7,7 @@ name: release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["v1.*.*"]
 
 permissions:
   contents: write

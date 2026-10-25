@@ -1,0 +1,4 @@
+#include <windows.h>
+
+// The UI page, served by web.cpp.
+101 RCDATA "ui.html"
