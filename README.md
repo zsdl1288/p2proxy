@@ -198,3 +198,7 @@ go build -trimpath -ldflags "-s -w" -o p2proxy.exe .
 ```
 
 需要 Go 1.27 或更高版本（见 go.mod）。自己编译的版本是开发版，不带更新功能。`-iface` 网卡绑定功能目前只支持 Windows。
+
+## 许可证
+
+[MIT](LICENSE) © zsdl1288

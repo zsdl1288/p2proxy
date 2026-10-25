@@ -47,7 +47,7 @@ jobs:
             dir="p2proxy-windows-$goarch"
             mkdir "$dir"
             cp "dist/p2proxy-windows-$goarch.exe" "$dir/p2proxy.exe"
-            cp start-server.bat start-client.bat clash-A.yaml README.md "$dir/"
+            cp start-server.bat start-client.bat clash-A.yaml README.md LICENSE "$dir/"
             zip -qr "dist/$dir.zip" "$dir"
           done
 
