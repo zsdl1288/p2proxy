@@ -9,6 +9,10 @@
 #include "crypto.h"
 #include "signal.h"
 
+#include <winhttp.h>
+
+#pragma comment(lib, "winhttp.lib")
+
 namespace p2px {
 
 namespace {
@@ -36,6 +40,68 @@ bool parseVersion(const std::string& v, int out[3]) {
 
 bool startsWith(const std::string& s, const std::string& prefix) { return s.rfind(prefix, 0) == 0; }
 
+struct Handle {
+  HINTERNET h = nullptr;
+  Handle(HINTERNET x = nullptr) : h(x) {}
+  ~Handle() {
+    if (h) WinHttpCloseHandle(h);
+  }
+  operator HINTERNET() const { return h; }
+};
+
+// Downloads use WinHTTP, which follows GitHub's redirects to its file servers.
+// Only the exit node fetches directly (clients fetch through it), and it runs
+// no TUN proxy, so unlike signaling this needs no pinning to the adapter.
+bool winhttpGet(const std::string& url, std::string& body, std::string& err) {
+  static HINTERNET session = [] {
+    HINTERNET h = WinHttpOpen(L"p2proxy/2", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
+                              WINHTTP_NO_PROXY_BYPASS, 0);
+    DWORD proto = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    WinHttpSetOption(h, WINHTTP_OPTION_SECURE_PROTOCOLS, &proto, sizeof proto);
+    return h;
+  }();
+  std::wstring w = toWide(url);
+  URL_COMPONENTS uc{};
+  uc.dwStructSize = sizeof uc;
+  uc.dwHostNameLength = uc.dwUrlPathLength = uc.dwExtraInfoLength = (DWORD)-1;
+  if (!WinHttpCrackUrl(w.c_str(), 0, 0, &uc)) {
+    err = "bad URL";
+    return false;
+  }
+  std::wstring host(uc.lpszHostName, uc.dwHostNameLength), path(uc.lpszUrlPath, uc.dwUrlPathLength);
+  if (uc.dwExtraInfoLength) path.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+  Handle conn(WinHttpConnect(session, host.c_str(), uc.nPort, 0));
+  Handle req(conn ? WinHttpOpenRequest(conn, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                       WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                       uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                  : nullptr);
+  if (!req) {
+    err = "request failed";
+    return false;
+  }
+  WinHttpSetTimeouts(req, 60000, 60000, 60000, 60000);
+  WinHttpAddRequestHeaders(req, L"Accept: application/vnd.github+json", (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
+  if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+      !WinHttpReceiveResponse(req, nullptr)) {
+    err = "HTTP request to " + toUtf8(host) + " failed (error " + std::to_string(GetLastError()) + ")";
+    return false;
+  }
+  DWORD status = 0, len = sizeof status;
+  WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                      &status, &len, WINHTTP_NO_HEADER_INDEX);
+  if (status != 200) {
+    err = "download failed (HTTP " + std::to_string(status) + ")";
+    return false;
+  }
+  char buf[16384];
+  DWORD n = 0;
+  while (WinHttpReadData(req, buf, sizeof buf, &n) && n > 0) {
+    body.append(buf, n);
+    if (body.size() > (64 << 20)) break;
+  }
+  return true;
+}
+
 // What the release workflow signs: the tag binds the checksums to one
 // version, so an old release cannot be replayed as a new one.
 std::string signedMessage(const std::string& tag, const std::string& sums) {
@@ -52,15 +118,7 @@ bool allowedFetchUrl(const std::string& url) {
 }
 
 Fetcher directFetcher() {
-  return [](const std::string& url, std::string& body, std::string& err) {
-    auto r = httpRequest("GET", url, "", {"Accept: application/vnd.github+json"}, 60000);
-    if (r.status != 200) {
-      err = !r.err.empty() ? r.err : "download failed (HTTP " + std::to_string(r.status) + ")";
-      return false;
-    }
-    body = std::move(r.body);
-    return true;
-  };
+  return [](const std::string& url, std::string& body, std::string& err) { return winhttpGet(url, body, err); };
 }
 
 bool newerVersion(const std::string& a, const std::string& b) {

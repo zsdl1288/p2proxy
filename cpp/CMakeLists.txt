@@ -26,6 +26,7 @@ add_executable(p2proxy WIN32
   src/crypto.cpp
   src/netutil.cpp
   src/stun.cpp
+  src/https.cpp
   src/signal.cpp
   src/quic.cpp
   src/tunnel.cpp
@@ -66,5 +67,5 @@ target_link_libraries(p2proxy PRIVATE
   nlohmann_json::nlohmann_json
   unofficial::webview2::webview2
   unofficial-sodium::sodium
-  ws2_32 iphlpapi winhttp bcrypt crypt32 ncrypt shell32 ole32 user32 advapi32 shlwapi
+  ws2_32 iphlpapi winhttp secur32 bcrypt crypt32 ncrypt shell32 ole32 user32 advapi32 shlwapi
 )

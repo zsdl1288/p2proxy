@@ -38,7 +38,9 @@
    - 模式保持"规则"，不要切换到"直连"。
 4. 浏览器打开 https://api.ipify.org ，显示的应该是服务端的 IP。
 
-订阅的规则只有两条：p2proxy 自己连接服务端的流量直连，其余全部走服务端。DNS 使用 fake-ip，域名在服务端解析。p2proxy 自己的流量会绑定物理网卡，绕开 Clash 的 TUN。
+订阅的规则只有两条：p2proxy 自己连接服务端的流量直连，其余全部走服务端。DNS 使用 fake-ip，域名在服务端解析。
+
+p2proxy 自己的流量（信令、DNS 查询、打洞和隧道）都绑定物理网卡，不经过 Clash 的 TUN，也不依赖 Clash 的规则和 DNS。所以 TUN 开着时退出再打开 p2proxy，也能直接重新连上服务端；在这期间其他程序会断网，连上后恢复。p2proxy 用 DNS-over-HTTPS 解析 ntfy.sh 和 STUN 服务器：先用 Cloudflare（1.1.1.1），连不上时改用阿里 DNS（223.5.5.5）。
 
 ## 测速
 

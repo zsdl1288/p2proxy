@@ -1,39 +1,21 @@
 #pragma once
-#include <winsock2.h>
-#include <windows.h>
-#include <winhttp.h>
-
 #include <atomic>
 #include <functional>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "crypto.h"
+#include "https.h"
 
 namespace p2px {
 
 using json = nlohmann::json;
 
-// A small WinHTTP client for p2proxy's own control traffic (signaling, DNS).
-// It never uses the system proxy, which may point back into the tunnel.
-struct HttpResult {
-  DWORD status = 0;
-  std::string body;
-  std::string err;
-};
-HttpResult httpRequest(const std::string& method, const std::string& url, const std::string& body,
-                       const std::vector<std::string>& headers, int timeoutMs);
-
-// Resolves a name with DNS-over-HTTPS (1.1.1.1), so a TUN-mode proxy's fake
-// IPs never reach us; falls back to the system resolver.
-std::vector<in_addr> resolveIPv4(const std::string& host);
-
 // Before a tunnel exists the peers swap addresses through an ntfy topic
 // derived from the shared key. Every message is encrypted with that key, so
-// the relay only sees opaque blobs.
+// the relay only sees opaque blobs. Like the tunnel itself, this traffic goes
+// out over the physical adapter (see HttpsRequest), never through a TUN.
 class Signaler {
 public:
   explicit Signaler(Keys k, std::string base = "https://ntfy.sh");
@@ -53,9 +35,7 @@ private:
   std::string base_;
   std::string cursor_;
   std::thread th_;
-  std::atomic<bool> stop_{false};
-  std::mutex mu_;
-  HINTERNET req_ = nullptr; // the open subscription, closed by stop()
+  std::atomic<bool> stop_{false}; // also aborts the open subscription
 };
 
 constexpr int64_t kSignalMaxAge = 120;
