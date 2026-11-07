@@ -42,8 +42,15 @@ void webviewFailed(HRESULT hr) {
   ShellExecuteW(nullptr, L"open", g_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+// WebView2 is not told when its parent is shown or hidden, and one created
+// under a hidden window (autostart) would stay hidden: the window looks black.
+void syncWebView() {
+  if (g_ctrl) g_ctrl->put_IsVisible(IsWindowVisible(g_hwnd) && !IsIconic(g_hwnd));
+}
+
 void showWindow() {
   ShowWindow(g_hwnd, IsIconic(g_hwnd) ? SW_RESTORE : SW_SHOW);
+  syncWebView();
   if (!SetForegroundWindow(g_hwnd)) {
     // Windows refused the foreground: at least put the window on top.
     SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
@@ -92,6 +99,7 @@ void initWebView() {
                               RECT r;
                               GetClientRect(g_hwnd, &r);
                               g_ctrl->put_Bounds(r);
+                              syncWebView();
                               g_web->Navigate(g_url.c_str());
                               return S_OK;
                             })
@@ -125,11 +133,13 @@ LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       RECT r;
       GetClientRect(h, &r);
       g_ctrl->put_Bounds(r);
+      syncWebView(); // minimized or restored
     }
     return 0;
   case WM_CLOSE:
     // Closing the window keeps the tunnel running; quit from the tray icon.
     ShowWindow(h, SW_HIDE);
+    syncWebView();
     if (!g_hintShown) {
       g_hintShown = true;
       g_nid.uFlags = NIF_INFO;
