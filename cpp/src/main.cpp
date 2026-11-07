@@ -259,6 +259,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     return 1;
   }
   app.load();
+  app.refreshAutostart();
   WebServer web;
   if (!web.start(app.uiPort, err)) {
     MessageBoxW(nullptr, toWide(err).c_str(), L"p2proxy", MB_ICONERROR);

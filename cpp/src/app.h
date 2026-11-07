@@ -27,6 +27,7 @@ public:
   bool setCongestionControl(const std::string& cc, std::string& err); // "bbr" or "cubic"
   bool setAutostart(bool on);
   bool autostart();
+  void refreshAutostart();
   std::shared_ptr<Client> client();
   // Clash (mihomo) profile that sends everything through our SOCKS port.
   bool subscription(const std::string& token, std::string& yaml);

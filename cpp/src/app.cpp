@@ -285,6 +285,11 @@ bool App::setAutostart(bool on) {
                          DWORD((cmd.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 }
 
+// The folder may have moved since startup was turned on.
+void App::refreshAutostart() {
+  if (autostart()) setAutostart(true);
+}
+
 std::shared_ptr<Client> App::client() {
   std::lock_guard lk(mu_);
   return client_;

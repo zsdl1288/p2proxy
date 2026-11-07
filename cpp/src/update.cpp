@@ -219,7 +219,7 @@ bool installRelease(const Fetcher& fetch, const Release& rel, std::string& err) 
     std::ofstream out(dir + L"\\" + toWide(f) + L".new", std::ios::binary | std::ios::trunc);
     out.write(body.data(), body.size());
     if (!out.good()) {
-      err = "cannot write to " + toUtf8(dir) + " (move p2proxy to a folder you can write to)";
+      err = "无法写入 " + toUtf8(dir) + "。请给这个文件夹开写入权限，或把 p2proxy 移到别的文件夹（不要放在 Program Files 里），然后再更新。";
       unstage();
       return false;
     }

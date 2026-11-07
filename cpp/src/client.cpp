@@ -472,7 +472,9 @@ void Client::runSpeedTest() {
   auto s1 = c->stats();
   double rtt = s1.MinRtt / 1000.0;
   uint64_t sent = s1.SendTotalPackets - s0.SendTotalPackets;
-  double loss = sent ? (s1.SendSuspectedLostPackets - s0.SendSuspectedLostPackets) * 100.0 / sent : 0.0;
+  uint64_t lost = lostPackets(s1.SendSuspectedLostPackets - s0.SendSuspectedLostPackets,
+                              s1.SendSpuriousLostPackets - s0.SendSpuriousLostPackets);
+  double loss = sent ? lost * 100.0 / sent : 0.0;
   {
     std::lock_guard lk(speedMu_);
     speed_["tunnel_up_mbps"] = up;
